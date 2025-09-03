@@ -44,13 +44,18 @@ jobs:
         run: go test ./... -v -cover
 
       - name: Build binary
-        run:
+        run: |
           mkdir -p bin/${{ matrix.os }}/${{ matrix.arch }}
           ext=""
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then ext=".exe"; fi
-          GOOS=${{ matrix.os == 'windows-latest' && echo 'windows' || echo matrix.os | sed 's/-latest//'}} \
-          GOARCH=${{ matrix.arch }} \
-          go build -o bin/${{ matrix.os }}/${{ matrix.arch }}/myapp$ext
+          GOOS_NAME=""
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            GOOS_NAME="windows"
+            ext=".exe"
+          else
+            GOOS_NAME=$(echo "${{ matrix.os }}" | sed 's/-latest//')
+          fi
+          echo "Building for $GOOS_NAME / ${{ matrix.arch }}"
+          GOOS=$GOOS_NAME GOARCH=${{ matrix.arch }} go build -o bin/${{ matrix.os }}/${{ matrix.arch }}/myapp$ext
 
       - name: Upload artifact
         uses: actions/upload-artifact@v3
