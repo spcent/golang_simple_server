@@ -86,7 +86,7 @@ func main() {
 
 func pingHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`pong"`))
+	w.Write([]byte(`pong`))
 }
 
 func helloHandler(w http.ResponseWriter, r *http.Request) {
