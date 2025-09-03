@@ -78,12 +78,9 @@ jobs:
           path: bin/
 
       - name: Create GitHub Release
-        run: |
-          gh release create ${{ github.ref_name }} bin/* \
-            --title "Release ${{ github.ref_name }}" \
-            --notes "Release notes" \
-            --draft=false \
-            --prerelease=false
+        uses: softprops/action-gh-release@v1
+        with:
+          files: bin/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
