@@ -8,6 +8,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// 设置测试环境变量
+	os.Setenv("AUTH_TOKEN", "secret")
+
 	// 清空路由
 	routes = []Route{}
 
