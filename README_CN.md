@@ -6,6 +6,7 @@
 - **动态路由**：支持`/hello/{name}`格式的路径参数匹配
 - **中间件系统**：内置日志（Logging）和鉴权（Auth）中间件，支持自定义扩展
 - **优雅关闭**：接收中断信号后5秒内完成连接清理
+- **日志**：支持glog日志库，支持日志级别配置
 - **env配置**：支持env文件配置，包括日志级别等
 - **测试覆盖**：包含路由匹配、中间件、404处理等核心功能测试
 - **开发工具链**：提供Makefile和dev.sh脚本简化构建/运行/测试流程
@@ -45,14 +46,15 @@ AddRoute("/users/{id}/posts/{postID}", func(...) {
 启动服务后，通过curl测试路由：
 
 ```bash
-curl http://localhost:8080/ping # {"message":"pong"}
+curl http://localhost:8080/ping # pong
 curl http://localhost:8080/hello # {"message":"Hello, World!"}
 curl -H "X-Token: secret" http://localhost:8080/hello/Alice # {"message":"Hello, Alice!"}
 ```
 
 ## 中间件说明
 - LoggingMiddleware ：记录请求耗时（格式： [时间] 方法 路径 (耗时) ）
-- AuthMiddleware ：校验 X-Token 请求头（值需为 secret ）
+- AuthMiddleware ：校验 X-Token 请求头
+- CorsMiddleware ：允许跨域请求
 
 中间件组合使用（示例在 main.go ）：
 ```go

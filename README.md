@@ -10,6 +10,7 @@ It includes dynamic routing, middleware, graceful shutdown, and environment-base
 * **Dynamic Routing**: Supports path parameters like `/hello/{name}`
 * **Middleware System**: Built-in Logging and Auth middlewares, with support for custom extensions
 * **Graceful Shutdown**: Cleans up connections within 5 seconds after receiving an interrupt signal
+* **Logging**: Add glog logging library for structured logging
 * **Env Configuration**: Supports `.env` files (e.g., log level, etc.)
 * **Test Coverage**: Includes tests for routing, middleware, 404 handling, and more
 * **Developer Toolchain**: Comes with a `Makefile` and `dev.sh` script for easy build/run/test workflows
@@ -52,7 +53,7 @@ AddRoute("/users/{id}/posts/{postID}", func(...) {
 ## Route Testing
 After starting the service, test the routes using curl:
 ```bash
-curl http://localhost:8080/ping # {"message":"pong"}
+curl http://localhost:8080/ping # pong
 curl http://localhost:8080/hello # {"message":"Hello, World!"}
 curl -H "X-Token: secret" http://localhost:8080/hello/Alice # {"message":"Hello, Alice!"}
 ```
@@ -60,7 +61,8 @@ curl -H "X-Token: secret" http://localhost:8080/hello/Alice # {"message":"Hello,
 ## Middleware
 
 * **LoggingMiddleware**: Logs request duration (`[time] METHOD PATH (duration)`)
-* **AuthMiddleware**: Validates `X-Token` header (must equal `secret`)
+* **AuthMiddleware**: Validates `X-Token` header
+* **CorsMiddleware**: Allow cross-domain requests
 
 Combine middlewares (see `main.go` for usage):
 
