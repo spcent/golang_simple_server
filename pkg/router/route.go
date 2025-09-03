@@ -1,4 +1,4 @@
-package main
+package router
 
 import (
 	"net/http"
@@ -9,19 +9,16 @@ var routes []Route
 
 type Handler func(http.ResponseWriter, *http.Request, map[string]string)
 
-// 路由注册表
 type Route struct {
 	Path    string
 	Handler Handler
 }
 
-// 添加路由
 func AddRoute(path string, handler Handler) {
 	routes = append(routes, Route{Path: path, Handler: handler})
 }
 
-// 路由匹配器
-func routerHandler(w http.ResponseWriter, r *http.Request) {
+func Handle(w http.ResponseWriter, r *http.Request) {
 	for _, route := range routes {
 		params, ok := matchRoute(route.Path, r.URL.Path)
 		if ok {
@@ -32,7 +29,8 @@ func routerHandler(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
-// 匹配路径，支持 {param} 参数
+// matchRoute("/users/{id}/posts/{postID}", "/users/123/posts/456") => {"id": "123", "postID": "456"}
+// support {param}
 func matchRoute(routePath, reqPath string) (map[string]string, bool) {
 	routeParts := splitPath(routePath)
 	reqParts := splitPath(reqPath)
@@ -52,7 +50,7 @@ func matchRoute(routePath, reqPath string) (map[string]string, bool) {
 	return params, true
 }
 
-// 路径拆分
+// SplitPath("/users/123/posts/456") => ["users", "123", "posts", "456"]
 func splitPath(path string) []string {
 	path = strings.Trim(path, "/")
 	if path == "" {

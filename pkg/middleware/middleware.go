@@ -1,4 +1,4 @@
-package main
+package middleware
 
 import (
 	"fmt"
@@ -7,10 +7,8 @@ import (
 	"time"
 )
 
-// 中间件类型
 type Middleware func(http.HandlerFunc) http.HandlerFunc
 
-// 应用中间件
 func ApplyMiddleware(h http.HandlerFunc, middlewares ...Middleware) http.HandlerFunc {
 	for _, m := range middlewares {
 		h = m(h)
@@ -18,7 +16,6 @@ func ApplyMiddleware(h http.HandlerFunc, middlewares ...Middleware) http.Handler
 	return h
 }
 
-// 日志中间件
 func LoggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -27,7 +24,7 @@ func LoggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// 简单鉴权中间件（要求 Header: X-Token: secret）
+// Auth middleware (requires Header: X-Token: secret)
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := r.Header.Get("X-Token")

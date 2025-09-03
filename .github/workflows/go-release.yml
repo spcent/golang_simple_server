@@ -9,7 +9,6 @@ on:
   pull_request:
     branches:
       - main
-  # 新发布触发
   release:
     types: [ published ]
 

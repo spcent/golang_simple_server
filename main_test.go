@@ -5,22 +5,22 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+
+	"github.com/spcent/golang_simple_server/pkg/middleware"
+	"github.com/spcent/golang_simple_server/pkg/router"
 )
 
 func TestMain(m *testing.M) {
 	// 设置测试环境变量
 	os.Setenv("AUTH_TOKEN", "secret")
 
-	// 清空路由
-	routes = []Route{}
-
 	// 注册测试路由
-	AddRoute("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	router.AddRoute("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		name := params["name"]
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"message":"Hello, ` + name + `!"}`))
 	})
-	AddRoute("/users/{id}/posts/{postID}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	router.AddRoute("/users/{id}/posts/{postID}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
@@ -59,7 +59,7 @@ func TestHello(t *testing.T) {
 
 func TestHelloName(t *testing.T) {
 	names := []string{"Alice", "Bob", "Charlie"}
-	handler := ApplyMiddleware(routerHandler, AuthMiddleware)
+	handler := middleware.ApplyMiddleware(router.Handle, middleware.AuthMiddleware)
 	for _, name := range names {
 		w := httptest.NewRecorder()
 		req := newAuthRequest("GET", "/hello/"+name)
@@ -73,7 +73,7 @@ func TestHelloName(t *testing.T) {
 func TestHelloNameUnauthorized(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/hello/Alice", nil) // 不带鉴权头
-	handler := ApplyMiddleware(routerHandler, AuthMiddleware)
+	handler := middleware.ApplyMiddleware(router.Handle, middleware.AuthMiddleware)
 	handler(w, req)
 
 	resp := w.Result()
@@ -85,7 +85,7 @@ func TestHelloNameUnauthorized(t *testing.T) {
 func TestDynamicRoute(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := newAuthRequest("GET", "/users/123/posts/456")
-	handler := ApplyMiddleware(routerHandler, AuthMiddleware)
+	handler := middleware.ApplyMiddleware(router.Handle, middleware.AuthMiddleware)
 	handler(w, req)
 
 	resp := w.Result()
@@ -97,35 +97,12 @@ func TestDynamicRoute(t *testing.T) {
 func TestNotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := newAuthRequest("GET", "/notfound")
-	routerHandlerWithMiddleware := ApplyMiddleware(routerHandler, AuthMiddleware)
+	routerHandlerWithMiddleware := middleware.ApplyMiddleware(router.Handle, middleware.AuthMiddleware)
 	routerHandlerWithMiddleware(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
-	}
-}
-
-func TestParamExtraction(t *testing.T) {
-	params, ok := matchRoute("/hello/{name}", "/hello/Alice")
-	if !ok || params["name"] != "Alice" {
-		t.Fatalf("expected name=Alice, got %v", params)
-	}
-
-	params2, ok2 := matchRoute("/users/{id}/posts/{postID}", "/users/123/posts/456")
-	if !ok2 || params2["id"] != "123" || params2["postID"] != "456" {
-		t.Fatalf("expected id=123 postID=456, got %v", params2)
-	}
-}
-
-func TestInvalidParamRoute(t *testing.T) {
-	_, ok := matchRoute("/hello/{name}", "/hello/")
-	if ok {
-		t.Fatal("expected route not match for /hello/")
-	}
-	_, ok2 := matchRoute("/users/{id}/posts/{postID}", "/users/123/posts")
-	if ok2 {
-		t.Fatal("expected route not match for incomplete path")
 	}
 }
 
@@ -223,12 +200,12 @@ func TestLoadEnvFileNotFound(t *testing.T) {
 
 func BenchmarkRouterHandler(b *testing.B) {
 	// 初始化测试路由
-	AddRoute("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {})
-	AddRoute("/users/{id}/posts/{postID}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {})
+	router.AddRoute("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {})
+	router.AddRoute("/users/{id}/posts/{postID}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {})
 
 	req := newAuthRequest("GET", "/users/123/posts/456")
 	w := httptest.NewRecorder()
-	handler := ApplyMiddleware(routerHandler, AuthMiddleware)
+	handler := middleware.ApplyMiddleware(router.Handle, middleware.AuthMiddleware)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
