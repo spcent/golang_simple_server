@@ -58,13 +58,13 @@ jobs:
             GOOS_NAME=$(echo "${{ matrix.os }}" | sed 's/-latest//')
           fi
           echo "Building for $GOOS_NAME / ${{ matrix.arch }}"
-          GOOS=$GOOS_NAME GOARCH=${{ matrix.arch }} go build -o bin/${{ matrix.os }}/${{ matrix.arch }}/myapp$ext
+          GOOS=$GOOS_NAME GOARCH=${{ matrix.arch }} go build -o bin/myapp-${{ matrix.os }}-${{ matrix.arch }}$ext
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: myapp-${{ matrix.os }}-${{ matrix.arch }}
-          path: bin/${{ matrix.os }}/${{ matrix.arch }}/
+          path: bin/
 
   release:
     name: Release
@@ -91,6 +91,6 @@ jobs:
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v1
         with:
-          files: bin/**/*
+          files: bin/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
