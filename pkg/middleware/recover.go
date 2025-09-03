@@ -5,6 +5,8 @@ import (
 	"net/http"
 )
 
+// recover middleware
+// recover from panic and return 500 internal server error
 func RecoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {

@@ -1,31 +1,97 @@
 package router
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 )
 
-var routes []Route
+const (
+	GET    = "GET"
+	POST   = "POST"
+	PUT    = "PUT"
+	DELETE = "DELETE"
+	PATCH  = "PATCH"
+	ANY    = "ANY"
+)
+
+var routes = map[string][]Route{}
 
 type Handler func(http.ResponseWriter, *http.Request, map[string]string)
 
 type Route struct {
+	Method  string
 	Path    string
 	Handler Handler
 }
 
-func AddRoute(path string, handler Handler) {
-	routes = append(routes, Route{Path: path, Handler: handler})
+func Get(path string, handler Handler) {
+	addRoute(GET, path, handler)
+}
+
+func Post(path string, handler Handler) {
+	addRoute(POST, path, handler)
+}
+
+func Put(path string, handler Handler) {
+	addRoute(PUT, path, handler)
+}
+
+func Delete(path string, handler Handler) {
+	addRoute(DELETE, path, handler)
+}
+
+func Patch(path string, handler Handler) {
+	addRoute(PATCH, path, handler)
+}
+
+func Any(path string, handler Handler) {
+	addRoute(ANY, path, handler)
+}
+
+func PrintRoutes() {
+	fmt.Println("Registered Routes:")
+	for method, methodRoutes := range routes {
+		for _, route := range methodRoutes {
+			fmt.Printf("%-6s %s\n", method, route.Path)
+		}
+	}
+}
+
+func addRoute(method, path string, handler Handler) {
+	if _, exists := routes[method]; !exists {
+		routes[method] = make([]Route, 0)
+	}
+
+	routes[method] = append(routes[method], Route{
+		Method:  method,
+		Path:    path,
+		Handler: handler,
+	})
 }
 
 func Handle(w http.ResponseWriter, r *http.Request) {
-	for _, route := range routes {
-		params, ok := matchRoute(route.Path, r.URL.Path)
-		if ok {
-			route.Handler(w, r, params)
-			return
+	method := r.Method
+	if methodRoutes, exists := routes[method]; exists {
+		for _, route := range methodRoutes {
+			params, ok := matchRoute(route.Path, r.URL.Path)
+			if ok {
+				route.Handler(w, r, params)
+				return
+			}
 		}
 	}
+
+	if anyRoutes, exists := routes[ANY]; exists {
+		for _, route := range anyRoutes {
+			params, ok := matchRoute(route.Path, r.URL.Path)
+			if ok {
+				route.Handler(w, r, params)
+				return
+			}
+		}
+	}
+
 	http.NotFound(w, r)
 }
 

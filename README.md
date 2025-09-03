@@ -39,13 +39,13 @@ make run   # Build and start the server (default port: 8080)
 
 ## Routing
 
-Register parameterized routes with `AddRoute` (see `main.go` for examples):
+Register parameterized routes with `router.(Get|Post|Delete|Put)` (see `main.go` for examples):
 
 ```go
-AddRoute("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+router.Get("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
     // Access params["name"]
 })
-AddRoute("/users/{id}/posts/{postID}", func(...) {
+router.Get("/users/{id}/posts/{postID}", func(...) {
     // Access params["id"] and params["postID"]
 })
 ```
@@ -67,7 +67,7 @@ curl -H "X-Token: secret" http://localhost:8080/hello/Alice # {"message":"Hello,
 Combine middlewares (see `main.go` for usage):
 
 ```go
-mux.HandleFunc("/", ApplyMiddleware(routerHandler, LoggingMiddleware, AuthMiddleware))
+mux.HandleFunc("/", middleware.Apply(routerHandler, LoggingMiddleware, AuthMiddleware))
 ```
 
 ## Testing

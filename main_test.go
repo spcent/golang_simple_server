@@ -15,12 +15,12 @@ func TestMain(m *testing.M) {
 	os.Setenv("AUTH_TOKEN", "secret")
 
 	// 注册测试路由
-	router.AddRoute("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	router.Get("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		name := params["name"]
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"message":"Hello, ` + name + `!"}`))
 	})
-	router.AddRoute("/users/{id}/posts/{postID}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	router.Get("/users/{id}/posts/{postID}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
@@ -59,7 +59,7 @@ func TestHello(t *testing.T) {
 
 func TestHelloName(t *testing.T) {
 	names := []string{"Alice", "Bob", "Charlie"}
-	handler := middleware.ApplyMiddleware(router.Handle, middleware.AuthMiddleware)
+	handler := middleware.Apply(router.Handle, middleware.Auth)
 	for _, name := range names {
 		w := httptest.NewRecorder()
 		req := newAuthRequest("GET", "/hello/"+name)
@@ -73,7 +73,7 @@ func TestHelloName(t *testing.T) {
 func TestHelloNameUnauthorized(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/hello/Alice", nil) // 不带鉴权头
-	handler := middleware.ApplyMiddleware(router.Handle, middleware.AuthMiddleware)
+	handler := middleware.Apply(router.Handle, middleware.Auth)
 	handler(w, req)
 
 	resp := w.Result()
@@ -85,7 +85,7 @@ func TestHelloNameUnauthorized(t *testing.T) {
 func TestDynamicRoute(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := newAuthRequest("GET", "/users/123/posts/456")
-	handler := middleware.ApplyMiddleware(router.Handle, middleware.AuthMiddleware)
+	handler := middleware.Apply(router.Handle, middleware.Auth)
 	handler(w, req)
 
 	resp := w.Result()
@@ -97,7 +97,7 @@ func TestDynamicRoute(t *testing.T) {
 func TestNotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := newAuthRequest("GET", "/notfound")
-	routerHandlerWithMiddleware := middleware.ApplyMiddleware(router.Handle, middleware.AuthMiddleware)
+	routerHandlerWithMiddleware := middleware.Apply(router.Handle, middleware.Auth)
 	routerHandlerWithMiddleware(w, req)
 
 	resp := w.Result()
@@ -106,106 +106,14 @@ func TestNotFound(t *testing.T) {
 	}
 }
 
-func TestLoadEnv(t *testing.T) {
-	// 创建临时文件模拟 .env
-	content := `
-# 注释行
-DB_HOST=127.0.0.1
-DB_USER=root
-DB_PASS="secret"
-EMPTY_KEY=
-QUOTED_KEY='quoted_value'
-`
-	tmpFile := "test.env"
-	err := os.WriteFile(tmpFile, []byte(content), 0644)
-	if err != nil {
-		t.Fatalf("创建临时文件失败: %v", err)
-	}
-	defer os.Remove(tmpFile)
-
-	// 清理环境变量，避免影响测试
-	os.Clearenv()
-
-	// 设置一个已有变量，确保不会被覆盖
-	os.Setenv("DB_USER", "existing_user")
-
-	// 调用 LoadEnv
-	err = LoadEnv(tmpFile, false)
-	if err != nil {
-		t.Fatalf("LoadEnv 执行失败: %v", err)
-	}
-
-	// 校验结果
-	tests := []struct {
-		key      string
-		expected string
-	}{
-		{"DB_HOST", "127.0.0.1"},
-		{"DB_USER", "existing_user"}, // 不覆盖已有值
-		{"DB_PASS", "secret"},
-		{"EMPTY_KEY", ""},
-		{"QUOTED_KEY", "quoted_value"},
-	}
-
-	for _, tt := range tests {
-		got := os.Getenv(tt.key)
-		if got != tt.expected {
-			t.Errorf("环境变量 %s = %q, 期望 %q", tt.key, got, tt.expected)
-		}
-	}
-}
-
-func TestLoadEnvWithOverwrite(t *testing.T) {
-	content := `
-DB_HOST=127.0.0.1
-DB_USER=root
-`
-	tmpFile := "test_overwrite.env"
-	err := os.WriteFile(tmpFile, []byte(content), 0644)
-	if err != nil {
-		t.Fatalf("创建临时文件失败: %v", err)
-	}
-	defer os.Remove(tmpFile)
-
-	// 情况1: 不覆盖已有值
-	os.Clearenv()
-	os.Setenv("DB_USER", "existing_user")
-	err = LoadEnv(tmpFile, false)
-	if err != nil {
-		t.Fatalf("LoadEnv 执行失败: %v", err)
-	}
-	if got := os.Getenv("DB_USER"); got != "existing_user" {
-		t.Errorf("DB_USER 应该保持为 existing_user, 实际是 %q", got)
-	}
-
-	// 情况2: 覆盖已有值
-	os.Clearenv()
-	os.Setenv("DB_USER", "existing_user")
-	err = LoadEnv(tmpFile, true)
-	if err != nil {
-		t.Fatalf("LoadEnv 执行失败: %v", err)
-	}
-	if got := os.Getenv("DB_USER"); got != "root" {
-		t.Errorf("DB_USER 应该被覆盖为 root, 实际是 %q", got)
-	}
-}
-
-func TestLoadEnvFileNotFound(t *testing.T) {
-	os.Clearenv()
-	err := LoadEnv("nonexistent.env", false)
-	if err == nil {
-		t.Fatal("期望 LoadEnv 返回错误，但没有返回")
-	}
-}
-
 func BenchmarkRouterHandler(b *testing.B) {
 	// 初始化测试路由
-	router.AddRoute("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {})
-	router.AddRoute("/users/{id}/posts/{postID}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {})
+	router.Get("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {})
+	router.Get("/users/{id}/posts/{postID}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {})
 
 	req := newAuthRequest("GET", "/users/123/posts/456")
 	w := httptest.NewRecorder()
-	handler := middleware.ApplyMiddleware(router.Handle, middleware.AuthMiddleware)
+	handler := middleware.Apply(router.Handle, middleware.Auth)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

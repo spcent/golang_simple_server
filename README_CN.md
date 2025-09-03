@@ -31,13 +31,13 @@ make run  # 构建并启动服务（默认端口:8080）
 ```
 
 ## 路由定义
-通过 AddRoute 函数注册带参数的路由（示例在 main.go ）：
+通过 router.(Get|Post|Delete|Put) 函数注册带参数的路由（示例在 main.go ）：
 
 ```go
-AddRoute("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+router.Get("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
     // 使用params["name"]获取路径参数
 })
-AddRoute("/users/{id}/posts/{postID}", func(...) {
+router.Get("/users/{id}/posts/{postID}", func(...) {
     // 使用params["id"]和params["postID"]
 })
 ```
@@ -58,7 +58,7 @@ curl -H "X-Token: secret" http://localhost:8080/hello/Alice # {"message":"Hello,
 
 中间件组合使用（示例在 main.go ）：
 ```go
-mux.HandleFunc("/", ApplyMiddleware(routerHandler, LoggingMiddleware, AuthMiddleware))
+mux.HandleFunc("/", middleware.Apply(routerHandler, LoggingMiddleware, AuthMiddleware))
 ```
 
 ## 运行测试
