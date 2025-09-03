@@ -1,6 +1,6 @@
 # Go 环境
-GOOS ?= linux # linux, darwin, windows
-GOARCH ?= amd64 # amd64, arm64
+GOOS ?= $(shell $(GO) env GOOS) # linux, darwin, windows
+GOARCH ?= $(shell $(GO) env GOARCH) # amd64, arm64
 GO ?= go
 BINARY_NAME ?= golang_simple_server
 PORT ?= 8080
@@ -15,7 +15,7 @@ build:
 
 # 启动服务器
 run: build
-	./$(BINARY_NAME)
+	./$(BINARY_NAME) -addr ":$(PORT)"
 
 # 运行测试
 test:
