@@ -44,7 +44,7 @@ jobs:
         run: go test ./... -v -cover
 
       - name: Build binary
-        run: |
+        run:
           mkdir -p bin/${{ matrix.os }}/${{ matrix.arch }}
           ext=""
           if [ "${{ matrix.os }}" = "windows-latest" ]; then ext=".exe"; fi
