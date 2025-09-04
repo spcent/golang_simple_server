@@ -17,6 +17,7 @@ const (
 
 var routes = map[string][]Route{}
 
+// Handler defines the function signature for handling HTTP requests.
 type Handler func(http.ResponseWriter, *http.Request, map[string]string)
 
 type Route struct {
@@ -116,11 +117,16 @@ func matchRoute(routePath, reqPath string) (map[string]string, bool) {
 	return params, true
 }
 
-// SplitPath("/users/123/posts/456") => ["users", "123", "posts", "456"]
+// splitPath splits the path into segments, ignoring empty parts.
+// Example:
+// ("/users/123/posts/456") => ["users", "123", "posts", "456"]
 func splitPath(path string) []string {
-	path = strings.Trim(path, "/")
-	if path == "" {
-		return []string{}
+	parts := strings.Split(path, "/")
+	segments := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			segments = append(segments, p)
+		}
 	}
-	return strings.Split(path, "/")
+	return segments
 }

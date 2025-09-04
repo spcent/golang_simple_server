@@ -12,12 +12,12 @@ func Use(middleware Middleware) {
 	middlewares = append(middlewares, middleware)
 }
 
-func Apply(h http.HandlerFunc, middlewares ...Middleware) http.HandlerFunc {
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		h = middlewares[i](h)
+func Apply(h http.HandlerFunc, m ...Middleware) http.HandlerFunc {
+	for i := len(m) - 1; i >= 0; i-- {
+		h = m[i](h)
 	}
 
-	for _, m := range middlewares {
+	for _, m := range m {
 		h = m(h)
 	}
 
