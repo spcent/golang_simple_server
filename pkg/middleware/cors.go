@@ -47,7 +47,7 @@ func CORS(next http.Handler) http.Handler {
 	})
 }
 
-func CORSMiddleware(opts CORSOptions, next http.HandlerFunc) http.HandlerFunc {
+func CORSWithOptions(opts CORSOptions, next http.HandlerFunc) http.HandlerFunc {
 	// provide sensible defaults
 	if len(opts.AllowedMethods) == 0 {
 		opts.AllowedMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}

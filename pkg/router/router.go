@@ -1,13 +1,15 @@
 package router
 
 import (
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 )
 
 type RouteRegistrar interface {
-	Register(mux *http.ServeMux)
+	Register(r *Router)
 }
 
 // segment represents a single precompiled route segment.
@@ -28,22 +30,27 @@ type node struct {
 	paramKeys  []string         // list of parameter names for this route
 }
 
-// Router is the radix/trie-based HTTP router.
-type Router struct {
-	root       *node
-	mux        *http.ServeMux
-	registrars []RouteRegistrar
-	paramBuf   sync.Pool // pool for param maps
+// Route holds route metadata for debugging/printing
+type route struct {
+	Method string
+	Path   string
 }
 
-func NewRouter(mux ...*http.ServeMux) *Router {
-	if len(mux) == 0 {
-		mux = append(mux, http.NewServeMux())
-	}
+// Router is the radix/trie-based HTTP router.
+type Router struct {
+	trees      map[string]*node // one radix tree per HTTP method
+	registrars []RouteRegistrar
+	routes     map[string][]route
+	paramBuf   *sync.Pool // pool for param maps
+	prefix     string     // prefix for all routes
+}
+
+func NewRouter() *Router {
 	return &Router{
-		mux:  mux[0],
-		root: &node{children: make(map[string]*node)},
-		paramBuf: sync.Pool{
+		trees:      make(map[string]*node),
+		registrars: []RouteRegistrar{},
+		routes:     make(map[string][]route),
+		paramBuf: &sync.Pool{
 			New: func() any { return make(map[string]string) },
 		},
 	}
@@ -55,14 +62,28 @@ func (r *Router) Register(registrar RouteRegistrar) {
 
 func (r *Router) Init() {
 	for _, registrar := range r.registrars {
-		registrar.Register(r.mux)
+		registrar.Register(r)
 	}
 }
 
-// AddRoute precompiles a route template and inserts it into the trie.
-func (r *Router) AddRoute(path string, handler Handler) {
-	segments := compileTemplate(path)
-	current := r.root
+// Group creates a sub-group with a prefix
+func (r *Router) Group(prefix string) *Router {
+	return &Router{
+		trees:    r.trees,
+		routes:   r.routes,
+		paramBuf: r.paramBuf,
+		prefix:   strings.TrimRight(prefix, "/"),
+	}
+}
+
+// AddRoute precompiles a route and inserts it into the corresponding method tree
+func (r *Router) AddRoute(method, path string, handler Handler) {
+	fullPath := r.prefix + path
+	if r.trees[method] == nil {
+		r.trees[method] = &node{children: make(map[string]*node)}
+	}
+	segments := compileTemplate(fullPath)
+	current := r.trees[method]
 	var paramKeys []string
 
 	for _, seg := range segments {
@@ -78,7 +99,6 @@ func (r *Router) AddRoute(path string, handler Handler) {
 			current = current.paramChild
 			continue
 		}
-
 		child, ok := current.children[seg.raw]
 		if !ok {
 			child = &node{
@@ -90,18 +110,33 @@ func (r *Router) AddRoute(path string, handler Handler) {
 		current = child
 	}
 
-	// Assign handler and precompiled template
 	current.handler = handler
 	current.template = segments
 	current.paramKeys = paramKeys
+
+	// Save for printing/debugging
+	r.routes[method] = append(r.routes[method], route{Method: method, Path: fullPath})
 }
 
-// ServeHTTP matches a request path against the trie and executes the handler.
+// ServeHTTP matches a request path against the correct method trie
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	method := req.Method
+	tree := r.trees[method]
+
+	// fallback for ANY routes
+	if tree == nil {
+		tree = r.trees[ANY]
+	}
+
+	if tree == nil {
+		http.NotFound(w, req)
+		return
+	}
+
 	path := strings.Trim(req.URL.Path, "/")
 	if path == "" {
-		if r.root.handler != nil {
-			r.root.handler(w, req, nil)
+		if tree.handler != nil {
+			tree.handler(w, req, nil)
 			return
 		}
 		http.NotFound(w, req)
@@ -110,11 +145,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	parts := strings.Split(path, "/")
 	params := r.paramBuf.Get().(map[string]string)
-	for k := range params { // clear old values
+	for k := range params {
 		delete(params, k)
 	}
 
-	current := r.root
+	current := tree
 	for _, part := range parts {
 		if child, ok := current.children[part]; ok {
 			current = child
@@ -140,7 +175,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.paramBuf.Put(params)
 }
 
-// compileTemplate precompiles a route string into segment metadata.
+// compileTemplate precompiles a route string into segments
 func compileTemplate(path string) []segment {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	segments := make([]segment, 0, len(parts))
@@ -159,4 +194,37 @@ func compileTemplate(path string) []segment {
 		}
 	}
 	return segments
+}
+
+// splitPath splits the path into segments, ignoring empty parts.
+// Example:
+// ("/users/123/posts/456") => ["users", "123", "posts", "456"]
+func splitPath(path string) []string {
+	parts := strings.Split(path, "/")
+	segments := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			segments = append(segments, p)
+		}
+	}
+	return segments
+}
+
+// --- Helper API for business usage ---
+
+func (r *Router) Get(path string, handler Handler)    { r.AddRoute(GET, path, handler) }
+func (r *Router) Post(path string, handler Handler)   { r.AddRoute(POST, path, handler) }
+func (r *Router) Put(path string, handler Handler)    { r.AddRoute(PUT, path, handler) }
+func (r *Router) Delete(path string, handler Handler) { r.AddRoute(DELETE, path, handler) }
+func (r *Router) Patch(path string, handler Handler)  { r.AddRoute(PATCH, path, handler) }
+func (r *Router) Any(path string, handler Handler)    { r.AddRoute(ANY, path, handler) }
+
+// PrintRoutes shows all registered routes grouped by method
+func (r *Router) Print(w io.Writer) {
+	fmt.Fprintln(w, "Registered Routes:")
+	for method, methodRoutes := range r.routes {
+		for _, route := range methodRoutes {
+			fmt.Fprintf(w, "%-6s %s\n", method, route.Path)
+		}
+	}
 }

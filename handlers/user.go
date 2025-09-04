@@ -3,12 +3,15 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/spcent/golang_simple_server/pkg/router"
 )
 
 type UserHandler struct{}
 
-func (u *UserHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/users", func(w http.ResponseWriter, r *http.Request) {
+func (u *UserHandler) Register(r *router.Router) {
+	r.Get("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintln(w, "User List")
 	})
 }

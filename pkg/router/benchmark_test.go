@@ -8,25 +8,25 @@ import (
 
 // createTestRouter builds a router with static and parameterized routes
 func createTestRouter() *Router {
-	router := NewRouter()
+	r := NewRouter()
 
 	// Static routes
-	router.AddRoute("/about", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	r.AddRoute(GET, "/about", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 		w.Write([]byte("about"))
 	})
-	router.AddRoute("/contact", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	r.AddRoute(GET, "/contact", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 		w.Write([]byte("contact"))
 	})
 
 	// Parameterized routes
-	router.AddRoute("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	r.AddRoute(GET, "/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		w.Write([]byte("Hello " + params["name"]))
 	})
-	router.AddRoute("/users/:id/books/:bookId", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	r.AddRoute(GET, "/users/:id/books/:bookId", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		w.Write([]byte("User " + params["id"] + " Book " + params["bookId"]))
 	})
 
-	return router
+	return r
 }
 
 // BenchmarkStaticRoute tests a static route (/about)

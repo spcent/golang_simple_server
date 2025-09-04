@@ -116,17 +116,3 @@ func matchRoute(routePath, reqPath string) (map[string]string, bool) {
 	}
 	return params, true
 }
-
-// splitPath splits the path into segments, ignoring empty parts.
-// Example:
-// ("/users/123/posts/456") => ["users", "123", "posts", "456"]
-func splitPath(path string) []string {
-	parts := strings.Split(path, "/")
-	segments := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p != "" {
-			segments = append(segments, p)
-		}
-	}
-	return segments
-}
