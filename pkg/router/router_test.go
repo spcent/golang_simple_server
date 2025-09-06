@@ -10,13 +10,13 @@ import (
 
 func TestBasicRoutes(t *testing.T) {
 	// Reset global router
-	router := NewRouter()
+	r := NewRouter()
 
-	Get("/ping", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	r.Get("/ping", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 		w.Write([]byte("pong"))
 	})
 
-	Post("/echo", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	r.Post("/echo", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 		w.Write([]byte("echo"))
 	})
 
@@ -33,7 +33,7 @@ func TestBasicRoutes(t *testing.T) {
 	for _, tt := range tests {
 		req := httptest.NewRequest(tt.method, tt.path, nil)
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		r.ServeHTTP(w, req)
 
 		resp := w.Body.String()
 		if resp != tt.expected {
@@ -43,13 +43,13 @@ func TestBasicRoutes(t *testing.T) {
 }
 
 func TestParamRoutes(t *testing.T) {
-	router := NewRouter()
+	r := NewRouter()
 
-	Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	r.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		w.Write([]byte("Hello " + params["name"]))
 	})
 
-	Get("/users/:id/books/:bookId", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	r.Get("/users/:id/books/:bookId", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		w.Write([]byte("User " + params["id"] + " Book " + params["bookId"]))
 	})
 
@@ -65,7 +65,7 @@ func TestParamRoutes(t *testing.T) {
 	for _, tt := range tests {
 		req := httptest.NewRequest("GET", tt.path, nil)
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		r.ServeHTTP(w, req)
 
 		resp := strings.TrimSpace(w.Body.String())
 		if resp != tt.expected {
@@ -75,9 +75,9 @@ func TestParamRoutes(t *testing.T) {
 }
 
 func TestAnyRoute(t *testing.T) {
-	router := NewRouter()
+	r := NewRouter()
 
-	Any("/any", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	r.Any("/any", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 		w.Write([]byte("any"))
 	})
 
@@ -85,7 +85,7 @@ func TestAnyRoute(t *testing.T) {
 	for _, method := range methods {
 		req := httptest.NewRequest(method, "/any", nil)
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		r.ServeHTTP(w, req)
 
 		if w.Body.String() != "any" {
 			t.Errorf("[%s /any] expected %q, got %q", method, "any", w.Body.String())

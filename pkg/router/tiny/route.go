@@ -1,4 +1,4 @@
-package router
+package tiny
 
 import (
 	"fmt"
@@ -115,4 +115,15 @@ func matchRoute(routePath, reqPath string) (map[string]string, bool) {
 		}
 	}
 	return params, true
+}
+
+func splitPath(path string) []string {
+	parts := strings.Split(path, "/")
+	segments := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			segments = append(segments, p)
+		}
+	}
+	return segments
 }

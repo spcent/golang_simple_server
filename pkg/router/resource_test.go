@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// 测试路由注册和控制器方法调用
-
-// mockController 用于验证方法调用和参数传递
 type mockController struct {
 	indexCalled  int
 	showCalled   int
@@ -55,12 +52,10 @@ func (m *mockController) Patch(w http.ResponseWriter, r *http.Request, params ma
 	w.WriteHeader(http.StatusOK)
 }
 
-// 测试Resource函数注册的路由是否正确
 func TestResource_RouteRegistration(t *testing.T) {
-	// 注册资源路由
-	Resource("/users", &mockController{})
+	r := NewRouter()
+	r.Resource("/users", &mockController{})
 
-	// 验证基础路径路由
 	testCases := []struct {
 		method string
 		path   string
@@ -77,25 +72,25 @@ func TestResource_RouteRegistration(t *testing.T) {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.path, nil)
 			rec := httptest.NewRecorder()
-			Handle(rec, req)
+			r.ServeHTTP(rec, req)
 			if rec.Code == http.StatusNotFound {
-				t.Errorf("路由未注册: %s %s", tc.method, tc.path)
+				t.Errorf("Route not registered: %s %s", tc.method, tc.path)
 			}
 		})
 	}
 }
 
-// 测试控制器方法调用和参数传递
 func TestResource_ControllerInvocation(t *testing.T) {
+	r := NewRouter()
 	ctrl := &mockController{}
-	Resource("/posts", ctrl)
+	r.Resource("/posts", ctrl)
 
 	tests := []struct {
 		name     string
 		method   string
 		path     string
 		wantCode int
-		wantCall *int // 指向mockController的调用计数器
+		wantCall *int
 		wantID   string
 	}{
 		{"Index", "GET", "/posts", http.StatusOK, &ctrl.indexCalled, ""},
@@ -110,27 +105,23 @@ func TestResource_ControllerInvocation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.path, nil)
 			rec := httptest.NewRecorder()
-			Handle(rec, req)
+			r.ServeHTTP(rec, req)
 
-			// 验证状态码
 			if rec.Code != tt.wantCode {
-				t.Errorf("期望状态码 %d，实际 %d", tt.wantCode, rec.Code)
+				t.Errorf("Expected status code %d, got %d", tt.wantCode, rec.Code)
 			}
 
-			// 验证方法被调用
 			if *tt.wantCall != 1 {
-				t.Errorf("方法未被调用，调用次数 %d", *tt.wantCall)
+				t.Errorf("Handler was not called, call count %d", *tt.wantCall)
 			}
 
-			// 验证参数传递
 			if tt.wantID != "" && ctrl.lastParams["id"] != tt.wantID {
-				t.Errorf("期望参数id=%s，实际 %s", tt.wantID, ctrl.lastParams["id"])
+				t.Errorf("Expected param id=%s, got %s", tt.wantID, ctrl.lastParams["id"])
 			}
 		})
 	}
 }
 
-// 测试BaseResourceController默认返回501
 func TestBaseResourceController_DefaultImplementation(t *testing.T) {
 	ctrl := &BaseResourceController{}
 	tests := []struct {
@@ -153,24 +144,22 @@ func TestBaseResourceController_DefaultImplementation(t *testing.T) {
 			rec := httptest.NewRecorder()
 			tt.call(rec, req)
 			if rec.Code != http.StatusNotImplemented {
-				t.Errorf("%s 方法期望返回501，实际返回 %d", tt.name, rec.Code)
+				t.Errorf("%s method expected 501, got %d", tt.name, rec.Code)
 			}
 		})
 	}
 }
 
-// 测试路径末尾斜杠处理
 func TestResource_PathTrimSuffix(t *testing.T) {
+	r := NewRouter()
 	ctrl := &mockController{}
-
-	// 测试带斜杠的路径
-	Resource("/products/", ctrl)
+	r.Resource("/products/", ctrl)
 
 	req := httptest.NewRequest("GET", "/products", nil)
 	rec := httptest.NewRecorder()
-	Handle(rec, req)
+	r.ServeHTTP(rec, req)
 
 	if ctrl.indexCalled != 1 {
-		t.Error("带斜杠的路径未正确修剪，Index方法未被调用")
+		t.Error("Path with trailing slash was not trimmed correctly, Index handler was not called")
 	}
 }

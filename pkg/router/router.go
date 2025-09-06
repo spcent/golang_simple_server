@@ -8,6 +8,18 @@ import (
 	"sync"
 )
 
+const (
+	GET    = "GET"
+	POST   = "POST"
+	PUT    = "PUT"
+	DELETE = "DELETE"
+	PATCH  = "PATCH"
+	ANY    = "ANY"
+)
+
+// Handler defines the function signature for handling HTTP requests.
+type Handler func(http.ResponseWriter, *http.Request, map[string]string)
+
 type RouteRegistrar interface {
 	Register(r *Router)
 }
@@ -43,6 +55,7 @@ type Router struct {
 	routes     map[string][]route
 	paramBuf   *sync.Pool // pool for param maps
 	prefix     string     // prefix for all routes
+	mu         sync.Mutex
 }
 
 func NewRouter() *Router {
@@ -56,8 +69,20 @@ func NewRouter() *Router {
 	}
 }
 
-func (r *Router) Register(registrar RouteRegistrar) {
-	r.registrars = append(r.registrars, registrar)
+func (r *Router) Register(registrars ...RouteRegistrar) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	seen := make(map[RouteRegistrar]bool)
+	for _, reg := range r.registrars {
+		seen[reg] = true
+	}
+
+	for _, reg := range registrars {
+		if !seen[reg] {
+			r.registrars = append(r.registrars, reg)
+		}
+	}
 }
 
 func (r *Router) Init() {
@@ -72,7 +97,7 @@ func (r *Router) Group(prefix string) *Router {
 		trees:    r.trees,
 		routes:   r.routes,
 		paramBuf: r.paramBuf,
-		prefix:   strings.TrimRight(prefix, "/"),
+		prefix:   r.prefix + strings.TrimRight(prefix, "/"),
 	}
 }
 
@@ -196,20 +221,6 @@ func compileTemplate(path string) []segment {
 	return segments
 }
 
-// splitPath splits the path into segments, ignoring empty parts.
-// Example:
-// ("/users/123/posts/456") => ["users", "123", "posts", "456"]
-func splitPath(path string) []string {
-	parts := strings.Split(path, "/")
-	segments := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p != "" {
-			segments = append(segments, p)
-		}
-	}
-	return segments
-}
-
 // --- Helper API for business usage ---
 
 func (r *Router) Get(path string, handler Handler)    { r.AddRoute(GET, path, handler) }
@@ -218,6 +229,17 @@ func (r *Router) Put(path string, handler Handler)    { r.AddRoute(PUT, path, ha
 func (r *Router) Delete(path string, handler Handler) { r.AddRoute(DELETE, path, handler) }
 func (r *Router) Patch(path string, handler Handler)  { r.AddRoute(PATCH, path, handler) }
 func (r *Router) Any(path string, handler Handler)    { r.AddRoute(ANY, path, handler) }
+func (r *Router) Resource(path string, controller ResourceController) {
+	path = strings.TrimSuffix(path, "/")
+
+	r.Get(path, controller.Index)
+	r.Post(path, controller.Create)
+
+	r.Get(path+"/:id", controller.Show)
+	r.Put(path+"/:id", controller.Update)
+	r.Delete(path+"/:id", controller.Delete)
+	r.Patch(path+"/:id", controller.Patch)
+}
 
 // PrintRoutes shows all registered routes grouped by method
 func (r *Router) Print(w io.Writer) {

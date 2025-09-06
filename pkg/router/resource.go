@@ -2,20 +2,7 @@ package router
 
 import (
 	"net/http"
-	"strings"
 )
-
-func Resource(path string, controller ResourceController) {
-	path = strings.TrimSuffix(path, "/")
-
-	Get(path, controller.Index)
-	Post(path, controller.Create)
-
-	Get(path+"/{id}", controller.Show)
-	Put(path+"/{id}", controller.Update)
-	Delete(path+"/{id}", controller.Delete)
-	Patch(path+"/{id}", controller.Patch)
-}
 
 type ResourceController interface {
 	Index(w http.ResponseWriter, r *http.Request, params map[string]string)

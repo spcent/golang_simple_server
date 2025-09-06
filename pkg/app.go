@@ -1,16 +1,15 @@
-package bootstrap
+package pkg
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
+	"github.com/spcent/golang_simple_server/pkg/config"
 	"github.com/spcent/golang_simple_server/pkg/glog"
 	"github.com/spcent/golang_simple_server/pkg/middleware"
 	"github.com/spcent/golang_simple_server/pkg/router"
@@ -21,7 +20,51 @@ var (
 	env  = flag.String("env", ".env", "Path to .env file")
 )
 
-func Boot(mux *http.ServeMux) {
+type App struct {
+	mux    *http.ServeMux
+	router *router.Router
+}
+
+// Option defines a function type for configuring the App
+// It follows the functional options pattern
+
+type Option func(*App)
+
+// WithMux sets the http.ServeMux for the App
+func WithMux(mux *http.ServeMux) Option {
+	return func(a *App) {
+		a.mux = mux
+	}
+}
+
+// WithRouter sets the router for the App
+func WithRouter(router *router.Router) Option {
+	return func(a *App) {
+		a.router = router
+	}
+}
+
+// New creates a new App instance with the provided options
+// Defaults are applied if no options are provided
+func New(options ...Option) *App {
+	app := &App{
+		// Set default values if needed
+		mux:    http.NewServeMux(),
+		router: router.NewRouter(),
+	}
+
+	// Apply all provided options
+	for _, opt := range options {
+		opt(app)
+	}
+
+	return app
+}
+
+// Boot initializes and starts the application
+// It sets up the router with the mux and starts the HTTP server
+func (a *App) Boot() {
+	// Setup router with mux
 	glog.Init()
 	defer glog.Flush()
 	defer glog.Close()
@@ -29,20 +72,21 @@ func Boot(mux *http.ServeMux) {
 	// Load.env file if it exists
 	if _, err := os.Stat(*env); err == nil {
 		glog.Infof("Load .env file: %s", *env)
-		err := LoadEnv(*env, true)
+		err := config.LoadEnv(*env, true)
 		if err != nil {
 			glog.Fatalf("Load .env failed: %v", err)
 		}
 	}
 
-	mux.HandleFunc("/", middleware.Apply(router.Handle, middleware.Logging, middleware.Auth))
+	a.router.Init()
+	a.mux.HandleFunc("/", middleware.Apply(a.router.ServeHTTP, middleware.Logging, middleware.Auth))
 	if os.Getenv("APP_DEBUG") == "true" {
-		router.PrintRoutes()
+		a.router.Print(os.Stdout)
 	}
 
 	server := &http.Server{
 		Addr:    *addr,
-		Handler: mux,
+		Handler: a.mux,
 	}
 
 	// Shutdown the server gracefully when SIGTERM is received
@@ -72,34 +116,10 @@ func Boot(mux *http.ServeMux) {
 	glog.Info("Server stopped gracefully")
 }
 
-// If overwrite=true, existing environment variables will be overwritten.
-// If overwrite=false, existing environment variables will not be overwritten.
-func LoadEnv(filepath string, overwrite bool) error {
-	file, err := os.Open(filepath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
+func (a *App) Logging() middleware.Middleware {
+	return middleware.Logging
+}
 
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		value = strings.Trim(value, `"'`)
-		if overwrite || os.Getenv(key) == "" {
-			os.Setenv(key, value)
-		}
-	}
-
-	return scanner.Err()
+func (a *App) Auth() middleware.Middleware {
+	return middleware.Auth
 }

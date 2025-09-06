@@ -7,9 +7,7 @@ import (
 	"github.com/spcent/golang_simple_server/pkg/router"
 )
 
-func RegisterRoutes() {
-	r := router.NewRouter()
-
+func RegisterRoutes(r *router.Router) {
 	r.Get("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		name := params["name"]
 		w.Header().Set("Content-Type", "application/json")
@@ -23,11 +21,5 @@ func RegisterRoutes() {
 		w.Write([]byte(fmt.Sprintf(`{"user": "%s", "post": "%s"}`, id, postID)))
 	})
 
-	registrars := []router.RouteRegistrar{
-		&HealthHandler{},
-		&UserHandler{},
-	}
-	for _, registrar := range registrars {
-		registrar.Register(r)
-	}
+	r.Register(&HealthHandler{}, &UserHandler{})
 }
