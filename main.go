@@ -4,20 +4,24 @@ import (
 	"net/http"
 
 	"github.com/spcent/golang_simple_server/handlers"
-	"github.com/spcent/golang_simple_server/pkg"
-	"github.com/spcent/golang_simple_server/pkg/middleware"
-	"github.com/spcent/golang_simple_server/pkg/router"
+	"github.com/spcent/golang_simple_server/pkg/foundation"
 )
 
 func main() {
-	mux := http.NewServeMux()
-	app := pkg.New(pkg.WithMux(mux))
+	// Create a new app with default configuration
+	app := foundation.New()
 
-	mux.HandleFunc("/ping", pingHandler)
-	mux.HandleFunc("/hello", middleware.Apply(helloHandler, middleware.Logging))
+	// Register routes directly on the app
+	app.HandleFunc("/ping", pingHandler)
+	app.HandleFunc("/hello", helloHandler)
 
-	r := router.NewRouter()
-	handlers.RegisterRoutes(r)
+	// Get the router and register routes
+	handlers.RegisterRoutes(app.Router())
+
+	// Apply middleware
+	app.Use(app.Logging(), app.Auth())
+
+	// Boot the application
 	app.Boot()
 }
 

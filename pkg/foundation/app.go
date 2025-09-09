@@ -1,4 +1,4 @@
-package pkg
+package foundation
 
 import (
 	"context"
@@ -16,13 +16,15 @@ import (
 )
 
 var (
-	addr = flag.String("addr", ":8080", "Server address to listen on")
-	env  = flag.String("env", ".env", "Path to .env file")
+	addr = flag.String("addr", "", "Server address to listen on")
+	env  = flag.String("env", "", "Path to .env file")
 )
 
 type App struct {
-	mux    *http.ServeMux
-	router *router.Router
+	addr    string
+	envFile string
+	mux     *http.ServeMux
+	router  *router.Router
 }
 
 // Option defines a function type for configuring the App
@@ -44,13 +46,29 @@ func WithRouter(router *router.Router) Option {
 	}
 }
 
+// WithAddr sets the server address
+func WithAddr(address string) Option {
+	return func(a *App) {
+		a.addr = address
+	}
+}
+
+// WithEnvPath sets the path to the .env file
+func WithEnvPath(path string) Option {
+	return func(a *App) {
+		a.envFile = path
+	}
+}
+
 // New creates a new App instance with the provided options
 // Defaults are applied if no options are provided
 func New(options ...Option) *App {
 	app := &App{
 		// Set default values if needed
-		mux:    http.NewServeMux(),
-		router: router.NewRouter(),
+		mux:     http.NewServeMux(),
+		router:  router.NewRouter(),
+		addr:    ":8080",
+		envFile: ".env",
 	}
 
 	// Apply all provided options
@@ -59,6 +77,33 @@ func New(options ...Option) *App {
 	}
 
 	return app
+}
+
+// HandleFunc registers a handler function for the given path
+// It's a wrapper around http.ServeMux.HandleFunc
+func (a *App) HandleFunc(pattern string, handler http.HandlerFunc) {
+	a.mux.HandleFunc(pattern, handler)
+}
+
+// Handle registers a handler for the given path
+// It's a wrapper around http.ServeMux.Handle
+func (a *App) Handle(pattern string, handler http.Handler) {
+	a.mux.Handle(pattern, handler)
+}
+
+// Use applies middleware to the router
+func (a *App) Use(middlewares ...middleware.Middleware) {
+	// Apply middleware to the router's ServeHTTP method
+	handler := a.router.ServeHTTP
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		handler = middleware.Apply(handler, middlewares[i])
+	}
+	a.mux.HandleFunc("/", handler)
+}
+
+// Router returns the underlying router for advanced configuration
+func (a *App) Router() *router.Router {
+	return a.router
 }
 
 // Boot initializes and starts the application
@@ -70,22 +115,28 @@ func (a *App) Boot() {
 	defer glog.Close()
 
 	// Load.env file if it exists
-	if _, err := os.Stat(*env); err == nil {
-		glog.Infof("Load .env file: %s", *env)
-		err := config.LoadEnv(*env, true)
+	if env != nil && *env != "" {
+		a.envFile = *env
+	}
+	if _, err := os.Stat(a.envFile); err == nil {
+		glog.Infof("Load .env file: %s", a.envFile)
+		err := config.LoadEnv(a.envFile, true)
 		if err != nil {
 			glog.Fatalf("Load .env failed: %v", err)
 		}
 	}
 
 	a.router.Init()
-	a.mux.HandleFunc("/", middleware.Apply(a.router.ServeHTTP, middleware.Logging, middleware.Auth))
+	// Middleware is applied through the Use() method
 	if os.Getenv("APP_DEBUG") == "true" {
 		a.router.Print(os.Stdout)
 	}
 
+	if addr != nil && *addr != "" {
+		a.addr = *addr
+	}
 	server := &http.Server{
-		Addr:    *addr,
+		Addr:    a.addr,
 		Handler: a.mux,
 	}
 
@@ -107,7 +158,7 @@ func (a *App) Boot() {
 		close(idleConnsClosed)
 	}()
 
-	glog.Infof("Server running on %s", *addr)
+	glog.Infof("Server running on %s", a.addr)
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		glog.Errorf("Server error: %v", err)
 	}
