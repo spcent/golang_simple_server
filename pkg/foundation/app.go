@@ -91,6 +91,35 @@ func (a *App) Handle(pattern string, handler http.Handler) {
 	a.mux.Handle(pattern, handler)
 }
 
+// Handle websocket request
+func (a *App) Websocket(path ...string) {
+	wsPath := "/ws"
+	if len(path) > 0 {
+		wsPath = path[0]
+	}
+
+	hub := NewHub()
+	a.mux.HandleFunc(wsPath, func(w http.ResponseWriter, r *http.Request) {
+		ServeWS(w, r, func(c *Conn) {
+			hub.Register(c)
+			// on close, unregister
+			go func() {
+				<-c.closeC
+				hub.Unregister(c)
+			}()
+			// custom read handler: broadcast text messages to hub
+			go c.readPump(func(op byte, payload []byte) {
+				if op == opcodeText {
+					// broadcast
+					hub.Broadcast(payload)
+				}
+			}, func() {
+				// on close
+			})
+		})
+	})
+}
+
 // Use applies middleware to the router
 func (a *App) Use(middlewares ...middleware.Middleware) {
 	// Apply middleware to the router's ServeHTTP method
