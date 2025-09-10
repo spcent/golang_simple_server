@@ -10,14 +10,15 @@ import (
 
 // KVStore represents a thread-safe in-memory KV store with async persistence and TTL.
 type KVStore struct {
-	data       map[string]valueWithTTL
-	filePath   string
-	file       *os.File
-	mutex      sync.RWMutex
-	logChan    chan entry
-	stopChan   chan struct{}
-	snapshotCh chan struct{}
-	batchSize  int
+	data         map[string]valueWithTTL
+	filePath     string
+	file         *os.File
+	mutex        sync.RWMutex
+	logChan      chan entry
+	stopChan     chan struct{}
+	snapshotCh   chan struct{}
+	batchSize    int
+	snapshotFreq time.Duration
 }
 
 type valueWithTTL struct {
@@ -32,15 +33,16 @@ type entry struct {
 	ExpireSec int64  `json:"expire_sec,omitempty"`
 }
 
-// NewKVStore creates a new KVStore and loads persisted data.
-func NewKVStore(filePath string, logBuffer int, batchSize int) (*KVStore, error) {
+// NewKVStore creates a KVStore with automatic snapshotting and TTL logging
+func NewKVStore(filePath string, logBuffer int, batchSize int, snapshotFreq time.Duration) (*KVStore, error) {
 	store := &KVStore{
-		data:       make(map[string]valueWithTTL),
-		filePath:   filePath,
-		logChan:    make(chan entry, logBuffer),
-		stopChan:   make(chan struct{}),
-		snapshotCh: make(chan struct{}, 1),
-		batchSize:  batchSize,
+		data:         make(map[string]valueWithTTL),
+		filePath:     filePath,
+		logChan:      make(chan entry, logBuffer),
+		stopChan:     make(chan struct{}),
+		snapshotCh:   make(chan struct{}, 1),
+		batchSize:    batchSize,
+		snapshotFreq: snapshotFreq,
 	}
 
 	// Open log file
@@ -60,6 +62,7 @@ func NewKVStore(filePath string, logBuffer int, batchSize int) (*KVStore, error)
 
 	// Start TTL cleaner
 	go store.ttlCleaner()
+	go store.autoSnapshot()
 
 	return store, nil
 }
@@ -247,6 +250,22 @@ func (kv *KVStore) ttlCleaner() {
 				}
 			}
 			kv.mutex.Unlock()
+		case <-kv.stopChan:
+			return
+		}
+	}
+}
+
+func (kv *KVStore) autoSnapshot() {
+	if kv.snapshotFreq <= 0 {
+		return
+	}
+	ticker := time.NewTicker(kv.snapshotFreq)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			kv.Snapshot()
 		case <-kv.stopChan:
 			return
 		}
