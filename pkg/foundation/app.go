@@ -3,11 +3,9 @@ package foundation
 import (
 	"context"
 	"flag"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -27,7 +25,6 @@ type App struct {
 	envFile string         // path to .env file
 	mux     *http.ServeMux // http serve mux for router
 	router  *router.Router // router for http request
-	hub     *Hub           // hub for websocket
 }
 
 // Option defines a function type for configuring the App
@@ -72,7 +69,6 @@ func New(options ...Option) *App {
 		router:  router.NewRouter(),
 		addr:    ":8080",
 		envFile: ".env",
-		hub:     NewHub(),
 	}
 
 	// Apply all provided options
@@ -93,75 +89,6 @@ func (a *App) HandleFunc(pattern string, handler http.HandlerFunc) {
 // It's a wrapper around http.ServeMux.Handle
 func (a *App) Handle(pattern string, handler http.Handler) {
 	a.mux.Handle(pattern, handler)
-}
-
-// Handle websocket request
-func (a *App) Websocket(path ...string) {
-	wsPath := "/ws"
-	if len(path) > 0 {
-		wsPath = path[0]
-	}
-
-	hub := a.hub
-	a.mux.HandleFunc(wsPath, func(w http.ResponseWriter, r *http.Request) {
-		// join room from query param ?room=name
-		room := r.URL.Query().Get("room")
-		if room == "" {
-			room = "default"
-		}
-
-		ServeWS(w, r, func(c *Conn) {
-			// register into hub
-			hub.Join(room, c)
-
-			// ensure removal on close
-			go func() {
-				<-c.closeC
-				hub.Leave(room, c)
-				hub.RemoveConn(c)
-			}()
-
-			// Read loop (blocks)
-			go func() {
-				for {
-					msg, err := c.ReadMessage()
-					if err != nil {
-						if err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
-							glog.Warningf("ReadMessage error: %v", err)
-						}
-						c.Close()
-						return
-					}
-					// Example: if text, treat as broadcast to room
-					switch msg.Op {
-					case opcodeText:
-						// broadcast to room (as text)
-						hub.BroadcastRoom(room, opcodeText, msg.Data)
-					case opcodeBinary:
-						// process binary messages specially; here we broadcast to same room as binary
-						hub.BroadcastRoom(room, opcodeBinary, msg.Data)
-					}
-				}
-			}()
-		})
-	})
-}
-
-// Simple admin broadcast endpoint (HTTP POST -> broadcast to all)
-func (a *App) EnableBroadcast() {
-	a.mux.HandleFunc("/_admin/broadcast", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST only", http.StatusMethodNotAllowed)
-			return
-		}
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "bad body", http.StatusBadRequest)
-			return
-		}
-		a.hub.BroadcastAll(opcodeText, body)
-		w.WriteHeader(http.StatusNoContent)
-	})
 }
 
 // Use applies middleware to the router
