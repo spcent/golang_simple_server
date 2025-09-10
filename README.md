@@ -5,11 +5,6 @@
 A lightweight HTTP server skeleton built with the Go standard library.
 It includes dynamic routing, middleware, graceful shutdown, and environment-based configuration — ideal for quickly building simple APIs or learning HTTP server development.
 
-## Documentation
-
-* **[English](docs/en/usage.md)**: Comprehensive guide with examples
-* **[中文](docs/cn/usage.md)**: 中文文档，包含详细的使用说明和示例
-
 ## Features
 
 * **Dynamic Routing**: Supports path parameters like `/hello/:name`
@@ -81,6 +76,11 @@ app.Use(app.Logging(), app.Auth())
 make test       # Run all tests
 make coverage   # Generate coverage report (outputs to coverage.html)
 ```
+
+## Usage
+
+* **[English](docs/en/usage.md)**: Comprehensive guide with examples
+* **[中文](docs/cn/usage.md)**: 中文文档，包含详细的使用说明和示例
 
 ## License
 MIT

@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -16,50 +15,57 @@ import (
 )
 
 const (
-	guid                    = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-	opcodeText        byte  = 0x1
-	opcodeBinary      byte  = 0x2
-	opcodeClose       byte  = 0x8
-	opcodePing        byte  = 0x9
-	opcodePong        byte  = 0xA
-	finBit            byte  = 0x80
-	maxControlPayload int64 = 125
-	defaultBufSize    int   = 4096
-	defaultPingPeriod       = 20 * time.Second
-	defaultPongWait         = 30 * time.Second
+	guid                     = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	opcodeContinuation byte  = 0x0
+	opcodeText         byte  = 0x1
+	opcodeBinary       byte  = 0x2
+	opcodeClose        byte  = 0x8
+	opcodePing         byte  = 0x9
+	opcodePong         byte  = 0xA
+	finBit             byte  = 0x80
+	maxControlPayload  int64 = 125
+	defaultBufSize     int   = 4096
+	defaultPingPeriod        = 20 * time.Second
+	defaultPongWait          = 30 * time.Second
+	// Fragmentation settings
+	maxFragmentSize = 64 * 1024 // 64KB fragments for sending
 )
 
-// Conn represents a single websocket connection
-type Conn struct {
-	conn       net.Conn
-	br         *bufio.Reader
-	bw         *bufio.Writer
-	sendCh     chan []byte
-	closeOnce  sync.Once
-	closed     int32
-	closeC     chan struct{}
-	readLimit  int64
-	lastPong   int64 // unix nanos
-	pingPeriod time.Duration
-	pongWait   time.Duration
-	pool       *sync.Pool
+// Message represents a websocket message
+type Message struct {
+	Op   byte   // opcodeText or opcodeBinary
+	Data []byte // payload
 }
 
-// NewConn wraps a net.Conn (after handshake) into our Conn
+// Conn is a single websocket connection wrapper with ReadMessage / WriteMessage APIs
+type Conn struct {
+	conn      net.Conn
+	br        *bufio.Reader
+	bw        *bufio.Writer
+	sendCh    chan []byte // serialized text frames (we'll use for WriteMessage after framing)
+	closeOnce sync.Once
+	closed    int32
+	closeC    chan struct{}
+
+	readLimit  int64
+	pingPeriod time.Duration
+	pongWait   time.Duration
+
+	// optional per-connection locks
+	writeMu sync.Mutex
+}
+
+// NewConn wraps a net.Conn after handshake
 func NewConn(c net.Conn) *Conn {
-	pool := &sync.Pool{
-		New: func() any { b := make([]byte, 0, defaultBufSize); return &b },
-	}
 	return &Conn{
 		conn:       c,
 		br:         bufio.NewReaderSize(c, 8192),
 		bw:         bufio.NewWriterSize(c, 8192),
-		sendCh:     make(chan []byte, 256),
+		sendCh:     make(chan []byte, 512),
 		closeC:     make(chan struct{}),
-		readLimit:  1 << 20, // 1 MiB default per message (tunable)
+		readLimit:  4 << 20, // 4 MiB default per message
 		pingPeriod: defaultPingPeriod,
 		pongWait:   defaultPongWait,
-		pool:       pool,
 	}
 }
 
@@ -75,30 +81,101 @@ func (c *Conn) Close() error {
 
 func (c *Conn) IsClosed() bool { return atomic.LoadInt32(&c.closed) == 1 }
 
-// SetReadLimit sets max payload that will be accepted per message
 func (c *Conn) SetReadLimit(n int64) { c.readLimit = n }
 
-// SendText sends a text message (non-blocking attempt; if buffer full, it will drop)
-func (c *Conn) SendText(b []byte) {
-	if c.IsClosed() {
-		return
+// --------- Low level frame read/write (handles masking, lengths) ----------
+
+// readFrame reads a single frame (one WebSocket frame, might be control or data fragment).
+// It returns: opcode, fin (bool), payload bytes, error.
+func (c *Conn) readFrame() (byte, bool, []byte, error) {
+	// read 2 first bytes
+	var h [2]byte
+	if _, err := io.ReadFull(c.br, h[:]); err != nil {
+		return 0, false, nil, err
 	}
-	// copy to avoid races
-	cp := make([]byte, len(b))
-	copy(cp, b)
-	select {
-	case c.sendCh <- cp:
+	fin := h[0]&finBit != 0
+	op := h[0] & 0x0F
+	mask := h[1]&0x80 != 0
+	len7 := int64(h[1] & 0x7F)
+
+	// per RFC, client->server frames MUST be masked
+	if !mask {
+		return 0, false, nil, errors.New("protocol error: unmasked client frame")
+	}
+
+	var payloadLen int64
+	switch len7 {
+	case 126:
+		var ext [2]byte
+		if _, err := io.ReadFull(c.br, ext[:]); err != nil {
+			return 0, false, nil, err
+		}
+		payloadLen = int64(uint16(ext[0])<<8 | uint16(ext[1]))
+	case 127:
+		var ext [8]byte
+		if _, err := io.ReadFull(c.br, ext[:]); err != nil {
+			return 0, false, nil, err
+		}
+		payloadLen = int64(uint64(ext[0])<<56 |
+			uint64(ext[1])<<48 |
+			uint64(ext[2])<<40 |
+			uint64(ext[3])<<32 |
+			uint64(ext[4])<<24 |
+			uint64(ext[5])<<16 |
+			uint64(ext[6])<<8 |
+			uint64(ext[7]))
 	default:
-		// drop if buffer full (backpressure strategy). You may block instead.
+		payloadLen = len7
 	}
+
+	if payloadLen > c.readLimit {
+		return 0, false, nil, errors.New("payload too large")
+	}
+
+	var maskKey [4]byte
+	if _, err := io.ReadFull(c.br, maskKey[:]); err != nil {
+		return 0, false, nil, err
+	}
+
+	payload := make([]byte, payloadLen)
+	if payloadLen > 0 {
+		if _, err := io.ReadFull(c.br, payload); err != nil {
+			return 0, false, nil, err
+		}
+		// unmask
+		for i := int64(0); i < payloadLen; i++ {
+			payload[i] ^= maskKey[i%4]
+		}
+	}
+
+	// control frame rules: control frames must not be fragmented and payload <=125
+	if op >= 0x8 {
+		if !fin {
+			return 0, false, nil, errors.New("protocol error: fragmented control frame")
+		}
+		if int64(len(payload)) > maxControlPayload {
+			return 0, false, nil, errors.New("protocol error: control frame too large")
+		}
+	}
+
+	return op, fin, payload, nil
 }
 
-// internal: write a frame to writer (server->client must not mask)
-func (c *Conn) writeFrame(op byte, payload []byte) error {
-	// single-frame write
+// writeFrame writes a single frame to the client (server->client frames are NOT masked)
+func (c *Conn) writeFrame(op byte, fin bool, payload []byte) error {
+	// ensure single writer at a time
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	// header
 	var header [14]byte
 	hlen := 0
-	header[0] = finBit | (op & 0x0F)
+	b0 := byte(0)
+	if fin {
+		b0 |= finBit
+	}
+	b0 |= op & 0x0F
+	header[0] = b0
 	hlen = 1
 
 	n := len(payload)
@@ -138,174 +215,236 @@ func (c *Conn) writeFrame(op byte, payload []byte) error {
 	return c.bw.Flush()
 }
 
-// readFrame reads one full frame from client and returns opcode and payload (unmasked)
-func (c *Conn) readFrame() (byte, []byte, error) {
-	// header: 2 bytes
-	h := make([]byte, 2)
-	if _, err := io.ReadFull(c.br, h); err != nil {
-		return 0, nil, err
-	}
-	fin := h[0]&finBit != 0
-	op := h[0] & 0x0F
-	mask := h[1]&0x80 != 0
-	len7 := int64(h[1] & 0x7F)
+// ----------- High level ReadMessage (handles fragmentation) ----------------
 
-	if !mask {
-		// per RFC, client->server frames must be masked
-		// Close connection on protocol error
-		return 0, nil, errors.New("unmasked client frame")
-	}
+// ReadMessage blocks and returns the next complete message (text or binary).
+// It handles fragmented messages by assembling continuation frames.
+func (c *Conn) ReadMessage() (Message, error) {
+	var msg Message
+	var assembling bool
+	var opcode byte
+	var buf []byte
 
-	var payloadLen int64
-	switch len7 {
-	case 126:
-		ext := make([]byte, 2)
-		if _, err := io.ReadFull(c.br, ext); err != nil {
-			return 0, nil, err
-		}
-		payloadLen = int64(uint16(ext[0])<<8 | uint16(ext[1]))
-	case 127:
-		ext := make([]byte, 8)
-		if _, err := io.ReadFull(c.br, ext); err != nil {
-			return 0, nil, err
-		}
-		payloadLen = int64(uint64(ext[0])<<56 |
-			uint64(ext[1])<<48 |
-			uint64(ext[2])<<40 |
-			uint64(ext[3])<<32 |
-			uint64(ext[4])<<24 |
-			uint64(ext[5])<<16 |
-			uint64(ext[6])<<8 |
-			uint64(ext[7]))
-	default:
-		payloadLen = len7
-	}
-
-	if payloadLen > c.readLimit {
-		return 0, nil, errors.New("payload too large")
-	}
-
-	// mask key
-	maskKey := make([]byte, 4)
-	if _, err := io.ReadFull(c.br, maskKey); err != nil {
-		return 0, nil, err
-	}
-
-	// read payload
-	b := make([]byte, payloadLen)
-	if payloadLen > 0 {
-		if _, err := io.ReadFull(c.br, b); err != nil {
-			return 0, nil, err
-		}
-		// unmask
-		for i := int64(0); i < payloadLen; i++ {
-			b[i] ^= maskKey[i%4]
-		}
-	}
-	if !fin {
-		// for simplicity, we do not currently support fragmented messages in this example.
-		// In production you should assemble fragments.
-		return 0, nil, errors.New("fragmented frames not supported in this example")
-	}
-	return op, b, nil
-}
-
-// readPump reads frames and dispatches them
-func (c *Conn) readPump(onMessage func(op byte, payload []byte), onClose func()) {
-	defer func() {
-		onClose()
-		c.Close()
-	}()
-	// set initial last pong
-	atomic.StoreInt64(&c.lastPong, time.Now().UnixNano())
-	// start a goroutine to enforce pong timeout
-	go func() {
-		ticker := time.NewTicker(c.pingPeriod / 2)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if c.IsClosed() {
-					return
-				}
-				last := time.Unix(0, atomic.LoadInt64(&c.lastPong))
-				if time.Since(last) > c.pongWait {
-					// timeout
-					c.Close()
-					return
-				}
-			case <-c.closeC:
-				return
-			}
-		}
-	}()
+	// track lastPong for keepalive
+	lastPong := time.Now()
+	// launch a small goroutine to monitor timeouts if desired (skipped here for brevity)
 
 	for {
-		op, payload, err := c.readFrame()
+		op, fin, payload, err := c.readFrame()
 		if err != nil {
-			if !c.IsClosed() {
-				// log but swallow EOF-like errors
-				if err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
-					log.Println("readFrame error:", err)
-				}
-			}
-			return
+			return msg, err
 		}
+
 		switch op {
 		case opcodeText, opcodeBinary:
-			onMessage(op, payload)
+			if assembling {
+				// shouldn't get a new data opcode while assembling (protocol error)
+				return msg, errors.New("protocol error: new data frame while assembling")
+			}
+			if fin {
+				// single-frame message
+				return Message{Op: op, Data: payload}, nil
+			}
+			// start assembling
+			assembling = true
+			opcode = op
+			buf = append(buf[:0], payload...)
+		case opcodeContinuation:
+			if !assembling {
+				return msg, errors.New("protocol error: continuation with no started message")
+			}
+			buf = append(buf, payload...)
+			if fin {
+				// finished
+				out := make([]byte, len(buf))
+				copy(out, buf)
+				return Message{Op: opcode, Data: out}, nil
+			}
 		case opcodePing:
-			// respond with Pong carrying the same payload
-			_ = c.writeFrame(opcodePong, payload)
+			// respond with pong carrying same payload
+			_ = c.writeFrame(opcodePong, true, payload)
 		case opcodePong:
-			atomic.StoreInt64(&c.lastPong, time.Now().UnixNano())
+			// update pong time - could be used externally
+			lastPong = time.Now()
+			_ = lastPong // placeholder if you want to expose last pong
 		case opcodeClose:
-			// echo close and return
-			_ = c.writeFrame(opcodeClose, payload)
-			return
+			// echo close and return error/EOF
+			_ = c.writeFrame(opcodeClose, true, payload)
+			return msg, io.EOF
 		default:
 			// ignore other opcodes
 		}
 	}
 }
 
-// writePump consumes sendCh and writes frames; also sends periodic pings
-func (c *Conn) writePump() {
-	ticker := time.NewTicker(c.pingPeriod)
-	defer func() {
-		ticker.Stop()
-		c.Close()
-	}()
+// WriteMessage writes a message to the connection. It will fragment messages larger than
+// maxFragmentSize into continuation frames. It blocks until written or encounter error.
+func (c *Conn) WriteMessage(op byte, data []byte) error {
+	if c.IsClosed() {
+		return errors.New("connection closed")
+	}
+	// If small enough, send as single frame
+	if len(data) <= maxFragmentSize {
+		return c.writeFrame(op, true, data)
+	}
 
-	for {
-		select {
-		case <-c.closeC:
-			return
-		case msg, ok := <-c.sendCh:
-			if !ok {
-				// channel closed
-				return
+	// fragment
+	total := len(data)
+	offset := 0
+	first := true
+	for offset < total {
+		end := offset + maxFragmentSize
+		if end > total {
+			end = total
+		}
+		chunk := data[offset:end]
+		fin := end == total
+		var frameOp byte
+		if first {
+			frameOp = op // first frame uses actual opcode
+			first = false
+		} else {
+			frameOp = opcodeContinuation
+		}
+		if err := c.writeFrame(frameOp, fin, chunk); err != nil {
+			return err
+		}
+		offset = end
+	}
+	return nil
+}
+
+// ----------- Hub with rooms/topics model ----------------
+
+// Hub manages multiple rooms (topics). Each room is a set of *Conn
+type Hub struct {
+	rooms map[string]map[*Conn]struct{}
+	mu    sync.RWMutex
+	// optional backpressure / broadcasting channel can be added
+}
+
+func NewHub() *Hub {
+	return &Hub{
+		rooms: make(map[string]map[*Conn]struct{}),
+	}
+}
+
+// Join adds conn to the named room
+func (h *Hub) Join(room string, c *Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rs, ok := h.rooms[room]
+	if !ok {
+		rs = make(map[*Conn]struct{})
+		h.rooms[room] = rs
+	}
+	rs[c] = struct{}{}
+}
+
+// Leave removes conn from room
+func (h *Hub) Leave(room string, c *Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if rs, ok := h.rooms[room]; ok {
+		delete(rs, c)
+		if len(rs) == 0 {
+			delete(h.rooms, room)
+		}
+	}
+}
+
+// BroadcastRoom sends to all connections in room (non-blocking to each conn's WriteMessage).
+// This method writes synchronously to each conn — consider writing asynchronously if many conns.
+func (h *Hub) BroadcastRoom(room string, op byte, data []byte) {
+	h.mu.RLock()
+	rs, ok := h.rooms[room]
+	h.mu.RUnlock()
+	if !ok {
+		return
+	}
+	// copy conns to avoid holding lock during network ops
+	conns := make([]*Conn, 0, len(rs))
+	for c := range rs {
+		conns = append(conns, c)
+	}
+	for _, c := range conns {
+		go func(cc *Conn) {
+			// non-blocking best-effort: attempt WriteMessage; if it fails, close conn
+			if err := cc.WriteMessage(op, data); err != nil {
+				cc.Close()
 			}
-			if err := c.writeFrame(opcodeText, msg); err != nil {
-				return
+		}(c)
+	}
+}
+
+// BroadcastAll broadcasts to all rooms/clients
+func (h *Hub) BroadcastAll(op byte, data []byte) {
+	h.mu.RLock()
+	rooms := make([]map[*Conn]struct{}, 0, len(h.rooms))
+	for _, rs := range h.rooms {
+		rooms = append(rooms, rs)
+	}
+	h.mu.RUnlock()
+	seen := make(map[*Conn]struct{})
+	for _, rs := range rooms {
+		for c := range rs {
+			if _, ok := seen[c]; ok {
+				continue
 			}
-		case <-ticker.C:
-			// send ping
-			if err := c.writeFrame(opcodePing, []byte("ping")); err != nil {
-				return
+			seen[c] = struct{}{}
+			go func(cc *Conn) {
+				if err := cc.WriteMessage(op, data); err != nil {
+					cc.Close()
+				}
+			}(c)
+		}
+	}
+}
+
+// RemoveConn removes conn from all rooms (call on close)
+func (h *Hub) RemoveConn(c *Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for room, rs := range h.rooms {
+		if _, ok := rs[c]; ok {
+			delete(rs, c)
+			if len(rs) == 0 {
+				delete(h.rooms, room)
 			}
 		}
 	}
 }
 
-// ServeWS performs handshake and registers conn to the hub callback
+// ---------- ServeWS: handshake + wrap Conn + integrate with Hub ------------
+
+func computeAcceptKey(key string) string {
+	h := sha1.New()
+	h.Write([]byte(key + guid))
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
+
+func headerContains(h http.Header, key, val string) bool {
+	v := h.Get(key)
+	if v == "" {
+		return false
+	}
+	parts := strings.Split(v, ",")
+	for _, p := range parts {
+		if strings.EqualFold(strings.TrimSpace(p), val) {
+			return true
+		}
+	}
+	return false
+}
+
+// ServeWS performs handshake and then calls onConn with a ready *Conn.
+// onConn should manage registering conn into hub/rooms and starting read loops.
+// The handshake writes the 101 response via Hijack.
 func ServeWS(w http.ResponseWriter, r *http.Request, onConn func(*Conn)) {
-	// Only accept GET
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// basic header checks
 	if !headerContains(r.Header, "Connection", "Upgrade") || !headerContains(r.Header, "Upgrade", "websocket") {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -315,20 +454,18 @@ func ServeWS(w http.ResponseWriter, r *http.Request, onConn func(*Conn)) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	// handshake response
+
 	accept := computeAcceptKey(key)
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "server does not support hijacking", http.StatusInternalServerError)
 		return
 	}
-	// write response headers manually
 	conn, buf, err := hj.Hijack()
 	if err != nil {
 		http.Error(w, "hijack failed", http.StatusInternalServerError)
 		return
 	}
-	// Build HTTP response
 	resp := "HTTP/1.1 101 Switching Protocols\r\n" +
 		"Upgrade: websocket\r\n" +
 		"Connection: Upgrade\r\n" +
@@ -342,88 +479,11 @@ func ServeWS(w http.ResponseWriter, r *http.Request, onConn func(*Conn)) {
 		conn.Close()
 		return
 	}
+
 	c := NewConn(conn)
-	// replace the buffered reader/writer to use the hijacked conn's buffers
+	// Use conn's br/bw backed by the hijacked conn
 	c.br = bufio.NewReaderSize(conn, 8192)
 	c.bw = bufio.NewWriterSize(conn, 8192)
 
-	// run pumps
-	go c.writePump()
-	go c.readPump(func(op byte, payload []byte) {
-		// default behavior: echo text
-		if op == opcodeText {
-			// echo
-			c.SendText(payload)
-		}
-	}, func() {
-		// onClose - nothing here; hub might handle registration
-	})
 	onConn(c)
 }
-
-// computeAcceptKey RFC6455
-func computeAcceptKey(key string) string {
-	h := sha1.New()
-	h.Write([]byte(key + guid))
-	return base64.StdEncoding.EncodeToString(h.Sum(nil))
-}
-
-func headerContains(h http.Header, key, val string) bool {
-	v := h.Get(key)
-	if v == "" {
-		return false
-	}
-	// split by comma and trim
-	parts := strings.Split(v, ",")
-	for _, p := range parts {
-		if strings.EqualFold(strings.TrimSpace(p), val) {
-			return true
-		}
-	}
-	return false
-}
-
-// Hub is a simple broadcast hub for multiple clients
-type Hub struct {
-	clients   map[*Conn]struct{}
-	register  chan *Conn
-	unreg     chan *Conn
-	broadcast chan []byte
-	mu        sync.RWMutex
-}
-
-func NewHub() *Hub {
-	h := &Hub{
-		clients:   make(map[*Conn]struct{}),
-		register:  make(chan *Conn),
-		unreg:     make(chan *Conn),
-		broadcast: make(chan []byte, 1024),
-	}
-	go h.run()
-	return h
-}
-
-func (h *Hub) run() {
-	for {
-		select {
-		case c := <-h.register:
-			h.mu.Lock()
-			h.clients[c] = struct{}{}
-			h.mu.Unlock()
-		case c := <-h.unreg:
-			h.mu.Lock()
-			delete(h.clients, c)
-			h.mu.Unlock()
-		case msg := <-h.broadcast:
-			h.mu.RLock()
-			for cl := range h.clients {
-				cl.SendText(msg)
-			}
-			h.mu.RUnlock()
-		}
-	}
-}
-
-func (h *Hub) Register(c *Conn)   { h.register <- c }
-func (h *Hub) Unregister(c *Conn) { h.unreg <- c }
-func (h *Hub) Broadcast(b []byte) { h.broadcast <- b }

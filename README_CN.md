@@ -2,10 +2,6 @@
 
 一个基于Go标准库的轻量级HTTP服务骨架，包含动态路由、中间件、优雅关闭等核心功能，适合快速搭建简单API服务或学习HTTP服务开发。
 
-## 文档
-* **[English](docs/en/usage.md)**: Comprehensive guide with examples
-* **[中文](docs/cn/usage.md)**: 中文文档，包含详细的使用说明和示例
-
 ## 功能特性
 - **动态路由**：支持`/hello/:name`格式的路径参数匹配
 - **中间件系统**：内置日志（Logging）和鉴权（Auth）中间件，支持自定义扩展
@@ -70,6 +66,10 @@ app.Use(app.Logging(), app.Auth())
 make test       # 运行所有测试
 make coverage   # 生成覆盖率报告（输出到coverage.html）
 ```
+
+## 使用指南
+* **[English](docs/en/usage.md)**: Comprehensive guide with examples
+* **[中文](docs/cn/usage.md)**: 中文文档，包含详细的使用说明和示例
 
 ## 许可
 MIT
