@@ -2,6 +2,7 @@ package store
 
 import (
 	"bufio"
+	"container/list"
 	"encoding/json"
 	"os"
 	"sync"
@@ -10,18 +11,20 @@ import (
 
 // KVStore represents a thread-safe in-memory KV store with async persistence and TTL.
 type KVStore struct {
-	data         map[string]valueWithTTL
+	data         map[string]*list.Element
+	lruList      *list.List
 	filePath     string
 	file         *os.File
 	mutex        sync.RWMutex
 	logChan      chan entry
 	stopChan     chan struct{}
-	snapshotCh   chan struct{}
 	batchSize    int
 	snapshotFreq time.Duration
+	maxEntries   int
 }
 
 type valueWithTTL struct {
+	Key      string
 	Value    []byte
 	ExpireAt time.Time
 }
@@ -34,15 +37,16 @@ type entry struct {
 }
 
 // NewKVStore creates a KVStore with automatic snapshotting and TTL logging
-func NewKVStore(filePath string, logBuffer int, batchSize int, snapshotFreq time.Duration) (*KVStore, error) {
+func NewKVStore(filePath string, logBuffer int, batchSize int, snapshotFreq time.Duration, maxEntries int) (*KVStore, error) {
 	store := &KVStore{
-		data:         make(map[string]valueWithTTL),
+		data:         make(map[string]*list.Element),
+		lruList:      list.New(),
 		filePath:     filePath,
 		logChan:      make(chan entry, logBuffer),
 		stopChan:     make(chan struct{}),
-		snapshotCh:   make(chan struct{}, 1),
 		batchSize:    batchSize,
 		snapshotFreq: snapshotFreq,
+		maxEntries:   maxEntries,
 	}
 
 	// Open log file
@@ -81,9 +85,13 @@ func (kv *KVStore) loadFromFile() error {
 			if e.ExpireSec > 0 {
 				expireAt = time.Now().Add(time.Duration(e.ExpireSec) * time.Second)
 			}
-			kv.data[e.Key] = valueWithTTL{Value: e.Value, ExpireAt: expireAt}
+			elem := kv.lruList.PushFront(valueWithTTL{Key: e.Key, Value: e.Value, ExpireAt: expireAt})
+			kv.data[e.Key] = elem
 		case "delete":
-			delete(kv.data, e.Key)
+			if elem, ok := kv.data[e.Key]; ok {
+				kv.lruList.Remove(elem)
+				delete(kv.data, e.Key)
+			}
 		}
 	}
 	return scanner.Err()
@@ -93,26 +101,42 @@ func (kv *KVStore) loadFromFile() error {
 func (kv *KVStore) Create(key string, value []byte, ttl int64) error {
 	kv.mutex.Lock()
 	defer kv.mutex.Unlock()
+
 	if _, exists := kv.data[key]; exists {
 		return os.ErrExist
 	}
+	if kv.lruList.Len() >= kv.maxEntries {
+		kv.evictLRU()
+	}
+
 	expireAt := time.Time{}
 	if ttl > 0 {
 		expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
 	}
-	kv.data[key] = valueWithTTL{Value: value, ExpireAt: expireAt}
+
+	elem := kv.lruList.PushFront(valueWithTTL{Key: key, Value: value, ExpireAt: expireAt})
+	kv.data[key] = elem
 	kv.logChan <- entry{Key: key, Value: value, Op: "create", ExpireSec: ttl}
 	return nil
 }
 
 // Read returns value if key exists and is not expired.
 func (kv *KVStore) Read(key string) ([]byte, bool) {
-	kv.mutex.RLock()
-	defer kv.mutex.RUnlock()
-	val, ok := kv.data[key]
-	if !ok || (!val.ExpireAt.IsZero() && time.Now().After(val.ExpireAt)) {
+	kv.mutex.Lock()
+	defer kv.mutex.Unlock()
+	elem, ok := kv.data[key]
+	if !ok {
 		return nil, false
 	}
+
+	val := elem.Value.(valueWithTTL)
+	if !val.ExpireAt.IsZero() && time.Now().After(val.ExpireAt) {
+		kv.removeElement(elem)
+		kv.logChan <- entry{Key: key, Op: "delete"}
+		return nil, false
+	}
+
+	kv.lruList.MoveToFront(elem)
 	return val.Value, true
 }
 
@@ -120,14 +144,19 @@ func (kv *KVStore) Read(key string) ([]byte, bool) {
 func (kv *KVStore) Update(key string, value []byte, ttl int64) error {
 	kv.mutex.Lock()
 	defer kv.mutex.Unlock()
-	if _, exists := kv.data[key]; !exists {
+
+	elem, ok := kv.data[key]
+	if !ok {
 		return os.ErrNotExist
 	}
+
 	expireAt := time.Time{}
 	if ttl > 0 {
 		expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
 	}
-	kv.data[key] = valueWithTTL{Value: value, ExpireAt: expireAt}
+
+	elem.Value = valueWithTTL{Key: key, Value: value, ExpireAt: expireAt}
+	kv.lruList.MoveToFront(elem)
 	kv.logChan <- entry{Key: key, Value: value, Op: "update", ExpireSec: ttl}
 	return nil
 }
@@ -136,9 +165,30 @@ func (kv *KVStore) Update(key string, value []byte, ttl int64) error {
 func (kv *KVStore) Delete(key string) error {
 	kv.mutex.Lock()
 	defer kv.mutex.Unlock()
-	delete(kv.data, key)
-	kv.logChan <- entry{Key: key, Op: "delete"}
+	elem, ok := kv.data[key]
+	if ok {
+		kv.removeElement(elem)
+		kv.logChan <- entry{Key: key, Op: "delete"}
+	}
 	return nil
+}
+
+func (kv *KVStore) evictLRU() {
+	if kv.lruList.Len() == 0 {
+		return
+	}
+	elem := kv.lruList.Back()
+	if elem != nil {
+		kv.removeElement(elem)
+		val := elem.Value.(valueWithTTL)
+		kv.logChan <- entry{Key: val.Key, Op: "delete"} // log eviction
+	}
+}
+
+func (kv *KVStore) removeElement(elem *list.Element) {
+	val := elem.Value.(valueWithTTL)
+	delete(kv.data, val.Key)
+	kv.lruList.Remove(elem)
 }
 
 func (kv *KVStore) MCreate(kvs map[string][]byte, ttl int64) error {
@@ -149,24 +199,35 @@ func (kv *KVStore) MCreate(kvs map[string][]byte, ttl int64) error {
 			return os.ErrExist
 		}
 	}
-	expireAt := time.Time{}
-	if ttl > 0 {
-		expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
-	}
 	for k, v := range kvs {
-		kv.data[k] = valueWithTTL{Value: v, ExpireAt: expireAt}
+		if kv.lruList.Len() >= kv.maxEntries {
+			kv.evictLRU()
+		}
+		expireAt := time.Time{}
+		if ttl > 0 {
+			expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
+		}
+		elem := kv.lruList.PushFront(valueWithTTL{Key: k, Value: v, ExpireAt: expireAt})
+		kv.data[k] = elem
 		kv.logChan <- entry{Key: k, Value: v, Op: "create", ExpireSec: ttl}
 	}
 	return nil
 }
 
 func (kv *KVStore) MRead(keys []string) map[string][]byte {
-	kv.mutex.RLock()
-	defer kv.mutex.RUnlock()
+	kv.mutex.Lock()
+	defer kv.mutex.Unlock()
 	res := make(map[string][]byte)
 	for _, k := range keys {
-		if val, ok := kv.data[k]; ok && (val.ExpireAt.IsZero() || time.Now().Before(val.ExpireAt)) {
-			res[k] = val.Value
+		if elem, ok := kv.data[k]; ok {
+			val := elem.Value.(valueWithTTL)
+			if val.ExpireAt.IsZero() || time.Now().Before(val.ExpireAt) {
+				res[k] = val.Value
+				kv.lruList.MoveToFront(elem)
+			} else {
+				kv.removeElement(elem)
+				kv.logChan <- entry{Key: k, Op: "delete"}
+			}
 		}
 	}
 	return res
@@ -175,17 +236,17 @@ func (kv *KVStore) MRead(keys []string) map[string][]byte {
 func (kv *KVStore) MUpdate(kvs map[string][]byte, ttl int64) error {
 	kv.mutex.Lock()
 	defer kv.mutex.Unlock()
-	for k := range kvs {
-		if _, exists := kv.data[k]; !exists {
+	for k, v := range kvs {
+		elem, ok := kv.data[k]
+		if !ok {
 			return os.ErrNotExist
 		}
-	}
-	expireAt := time.Time{}
-	if ttl > 0 {
-		expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
-	}
-	for k, v := range kvs {
-		kv.data[k] = valueWithTTL{Value: v, ExpireAt: expireAt}
+		expireAt := time.Time{}
+		if ttl > 0 {
+			expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
+		}
+		elem.Value = valueWithTTL{Key: k, Value: v, ExpireAt: expireAt}
+		kv.lruList.MoveToFront(elem)
 		kv.logChan <- entry{Key: k, Value: v, Op: "update", ExpireSec: ttl}
 	}
 	return nil
@@ -195,8 +256,10 @@ func (kv *KVStore) MDelete(keys []string) error {
 	kv.mutex.Lock()
 	defer kv.mutex.Unlock()
 	for _, k := range keys {
-		delete(kv.data, k)
-		kv.logChan <- entry{Key: k, Op: "delete"}
+		if elem, ok := kv.data[k]; ok {
+			kv.removeElement(elem)
+			kv.logChan <- entry{Key: k, Op: "delete"}
+		}
 	}
 	return nil
 }
@@ -237,16 +300,18 @@ func (kv *KVStore) asyncLogWriter() {
 
 // ttlCleaner periodically removes expired keys.
 func (kv *KVStore) ttlCleaner() {
-	ticker := time.NewTicker(time.Second * 1)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			now := time.Now()
 			kv.mutex.Lock()
-			for k, v := range kv.data {
-				if !v.ExpireAt.IsZero() && now.After(v.ExpireAt) {
-					delete(kv.data, k)
+			for _, elem := range kv.data {
+				val := elem.Value.(valueWithTTL)
+				if !val.ExpireAt.IsZero() && now.After(val.ExpireAt) {
+					kv.removeElement(elem)
+					kv.logChan <- entry{Key: val.Key, Op: "delete"}
 				}
 			}
 			kv.mutex.Unlock()
@@ -276,6 +341,7 @@ func (kv *KVStore) autoSnapshot() {
 func (kv *KVStore) Snapshot() error {
 	kv.mutex.RLock()
 	defer kv.mutex.RUnlock()
+
 	tmpFile := kv.filePath + ".tmp"
 	f, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
@@ -283,12 +349,13 @@ func (kv *KVStore) Snapshot() error {
 	}
 	defer f.Close()
 
-	for k, v := range kv.data {
+	for elem := kv.lruList.Front(); elem != nil; elem = elem.Next() {
+		val := elem.Value.(valueWithTTL)
 		ttl := int64(0)
-		if !v.ExpireAt.IsZero() {
-			ttl = int64(time.Until(v.ExpireAt).Seconds())
+		if !val.ExpireAt.IsZero() {
+			ttl = int64(time.Until(val.ExpireAt).Seconds())
 		}
-		e := entry{Key: k, Value: v.Value, Op: "create", ExpireSec: ttl}
+		e := entry{Key: val.Key, Value: val.Value, Op: "create", ExpireSec: ttl}
 		b, _ := json.Marshal(e)
 		f.Write(append(b, '\n'))
 	}
