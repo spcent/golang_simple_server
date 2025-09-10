@@ -63,6 +63,20 @@ type Middleware func(next RoundTripperFunc) RoundTripperFunc
 // RoundTripperFunc is a functional form of http.RoundTripper-like function.
 type RoundTripperFunc func(req *http.Request) (*http.Response, error)
 
+func Logging(next RoundTripperFunc) RoundTripperFunc {
+	return func(req *http.Request) (*http.Response, error) {
+		start := time.Now()
+		resp, err := next(req)
+		dur := time.Since(start)
+		if err != nil {
+			println("HTTP ERR:", err.Error(), "took", dur.String())
+		} else {
+			println("HTTP OK:", resp.Status, "took", dur.String())
+		}
+		return resp, err
+	}
+}
+
 // HttpClient is a wrapper around http.Client with retry, timeout, and backoff support.
 type HttpClient struct {
 	client         *http.Client
@@ -224,14 +238,10 @@ func (hc *HttpClient) doRequest(req *http.Request, opts ...RequestOption) (*http
 // do executes an HTTP request with retry logic.
 func (hc *HttpClient) do(cfg *requestConfig) RoundTripperFunc {
 	return func(req *http.Request) (*http.Response, error) {
-		retryCount := 0
-		if cfg.retryCount != nil {
-			retryCount = *cfg.retryCount
-		}
 		var lastErr error
 		var resp *http.Response
 
-		for i := 0; i <= retryCount; i++ {
+		for i := 0; i <= *cfg.retryCount; i++ {
 			resp, lastErr = hc.client.Do(req)
 			if lastErr == nil && (resp.StatusCode < 500) {
 				// success

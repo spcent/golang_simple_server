@@ -3,6 +3,7 @@ package foundation
 import (
 	"context"
 	"flag"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +14,7 @@ import (
 	"github.com/spcent/golang_simple_server/pkg/glog"
 	"github.com/spcent/golang_simple_server/pkg/middleware"
 	"github.com/spcent/golang_simple_server/pkg/router"
+	ws "github.com/spcent/golang_simple_server/pkg/websocket"
 )
 
 var (
@@ -25,6 +27,7 @@ type App struct {
 	envFile string         // path to .env file
 	mux     *http.ServeMux // http serve mux for router
 	router  *router.Router // router for http request
+	wsHub   *ws.Hub        // WebSocket hub
 }
 
 // Option defines a function type for configuring the App
@@ -167,6 +170,74 @@ func (a *App) Boot() {
 	glog.Info("Server stopped gracefully")
 }
 
+// WebSocketConfig defines the configuration for WebSocket
+// WebSocket配置选项
+type WebSocketConfig struct {
+	WorkerCount   int             // Number of worker goroutines
+	JobQueueSize  int             // Size of the job queue
+	SendQueueSize int             // Size of the send queue per connection
+	SendTimeout   time.Duration   // Timeout for sending messages
+	SendBehavior  ws.SendBehavior // Behavior when queue is full or timeout occurs
+	Secret        []byte          // Secret key for JWT authentication
+	WSRoutePath   string          // Path for WebSocket connection
+	BroadcastPath string          // Path for broadcasting messages
+}
+
+// DefaultWebSocketConfig returns default WebSocket configuration
+// 默认WebSocket配置
+func DefaultWebSocketConfig() WebSocketConfig {
+	return WebSocketConfig{
+		WorkerCount:   16,
+		JobQueueSize:  4096,
+		SendQueueSize: 256,
+		SendTimeout:   200 * time.Millisecond,
+		SendBehavior:  ws.SendBlock,
+		Secret:        []byte("change-this-secret"),
+		WSRoutePath:   "/ws",
+		BroadcastPath: "/_admin/broadcast",
+	}
+}
+
+// ConfigureWebSocket configures WebSocket support for the app
+// It returns the Hub for advanced usage
+// 配置WebSocket支持，返回Hub用于高级操作
+func (a *App) ConfigureWebSocket() *ws.Hub {
+	return a.ConfigureWebSocketWithOptions(DefaultWebSocketConfig())
+}
+
+// ConfigureWebSocketWithOptions configures WebSocket support with custom options
+// 配置WebSocket支持（自定义选项）
+func (a *App) ConfigureWebSocketWithOptions(config WebSocketConfig) *ws.Hub {
+	// Create hub and auth
+	hub := ws.NewHub(config.WorkerCount, config.JobQueueSize)
+	a.wsHub = hub
+	wsAuth := ws.NewSimpleRoomAuth(config.Secret)
+
+	// Register WebSocket handler
+	a.HandleFunc(config.WSRoutePath, func(w http.ResponseWriter, r *http.Request) {
+		ws.ServeWSWithAuth(w, r, hub, wsAuth, config.SendQueueSize, config.SendTimeout, config.SendBehavior)
+	})
+
+	// Register broadcast endpoint
+	a.HandleFunc(config.BroadcastPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Error reading request body", http.StatusInternalServerError)
+			return
+		}
+
+		hub.BroadcastAll(ws.OpcodeText, b)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	return hub
+}
+
+// Logging returns the logging middleware
 func (a *App) Logging() middleware.Middleware {
 	return middleware.Logging
 }
