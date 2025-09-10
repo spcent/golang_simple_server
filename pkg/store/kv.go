@@ -14,10 +14,10 @@ type KVStore struct {
 	filePath   string
 	file       *os.File
 	mutex      sync.RWMutex
-	persistMux sync.Mutex
 	logChan    chan entry
 	stopChan   chan struct{}
 	snapshotCh chan struct{}
+	batchSize  int
 }
 
 type valueWithTTL struct {
@@ -33,13 +33,14 @@ type entry struct {
 }
 
 // NewKVStore creates a new KVStore and loads persisted data.
-func NewKVStore(filePath string, logBuffer int) (*KVStore, error) {
+func NewKVStore(filePath string, logBuffer int, batchSize int) (*KVStore, error) {
 	store := &KVStore{
 		data:       make(map[string]valueWithTTL),
 		filePath:   filePath,
 		logChan:    make(chan entry, logBuffer),
 		stopChan:   make(chan struct{}),
 		snapshotCh: make(chan struct{}, 1),
+		batchSize:  batchSize,
 	}
 
 	// Open log file
@@ -137,20 +138,95 @@ func (kv *KVStore) Delete(key string) error {
 	return nil
 }
 
+func (kv *KVStore) MCreate(kvs map[string][]byte, ttl int64) error {
+	kv.mutex.Lock()
+	defer kv.mutex.Unlock()
+	for k := range kvs {
+		if _, exists := kv.data[k]; exists {
+			return os.ErrExist
+		}
+	}
+	expireAt := time.Time{}
+	if ttl > 0 {
+		expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
+	}
+	for k, v := range kvs {
+		kv.data[k] = valueWithTTL{Value: v, ExpireAt: expireAt}
+		kv.logChan <- entry{Key: k, Value: v, Op: "create", ExpireSec: ttl}
+	}
+	return nil
+}
+
+func (kv *KVStore) MRead(keys []string) map[string][]byte {
+	kv.mutex.RLock()
+	defer kv.mutex.RUnlock()
+	res := make(map[string][]byte)
+	for _, k := range keys {
+		if val, ok := kv.data[k]; ok && (val.ExpireAt.IsZero() || time.Now().Before(val.ExpireAt)) {
+			res[k] = val.Value
+		}
+	}
+	return res
+}
+
+func (kv *KVStore) MUpdate(kvs map[string][]byte, ttl int64) error {
+	kv.mutex.Lock()
+	defer kv.mutex.Unlock()
+	for k := range kvs {
+		if _, exists := kv.data[k]; !exists {
+			return os.ErrNotExist
+		}
+	}
+	expireAt := time.Time{}
+	if ttl > 0 {
+		expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
+	}
+	for k, v := range kvs {
+		kv.data[k] = valueWithTTL{Value: v, ExpireAt: expireAt}
+		kv.logChan <- entry{Key: k, Value: v, Op: "update", ExpireSec: ttl}
+	}
+	return nil
+}
+
+func (kv *KVStore) MDelete(keys []string) error {
+	kv.mutex.Lock()
+	defer kv.mutex.Unlock()
+	for _, k := range keys {
+		delete(kv.data, k)
+		kv.logChan <- entry{Key: k, Op: "delete"}
+	}
+	return nil
+}
+
 // asyncLogWriter writes log entries to disk asynchronously.
 func (kv *KVStore) asyncLogWriter() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	buffer := make([]entry, 0, kv.batchSize)
+
+	flush := func() {
+		if len(buffer) == 0 {
+			return
+		}
+		for _, e := range buffer {
+			b, _ := json.Marshal(e)
+			kv.file.Write(append(b, '\n'))
+		}
+		kv.file.Sync()
+		buffer = buffer[:0]
+	}
+
 	for {
 		select {
 		case e := <-kv.logChan:
-			b, _ := json.Marshal(e)
-			kv.file.Write(append(b, '\n'))
-		case <-kv.stopChan:
-			close(kv.logChan)
-			for e := range kv.logChan {
-				b, _ := json.Marshal(e)
-				kv.file.Write(append(b, '\n'))
+			buffer = append(buffer, e)
+			if len(buffer) >= kv.batchSize {
+				flush()
 			}
-			kv.file.Sync()
+		case <-ticker.C:
+			flush()
+		case <-kv.stopChan:
+			flush()
 			return
 		}
 	}
@@ -187,17 +263,17 @@ func (kv *KVStore) Snapshot() error {
 		return err
 	}
 	defer f.Close()
+
 	for k, v := range kv.data {
 		ttl := int64(0)
 		if !v.ExpireAt.IsZero() {
-			ttl = int64(v.ExpireAt.Sub(time.Now()).Seconds())
+			ttl = int64(time.Until(v.ExpireAt).Seconds())
 		}
 		e := entry{Key: k, Value: v.Value, Op: "create", ExpireSec: ttl}
 		b, _ := json.Marshal(e)
 		f.Write(append(b, '\n'))
 	}
-	kv.persistMux.Lock()
-	defer kv.persistMux.Unlock()
+
 	kv.file.Close()
 	os.Rename(tmpFile, kv.filePath)
 	kv.file, _ = os.OpenFile(kv.filePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
@@ -207,5 +283,6 @@ func (kv *KVStore) Snapshot() error {
 // Close gracefully stops background goroutines and flushes logs.
 func (kv *KVStore) Close() error {
 	close(kv.stopChan)
+	time.Sleep(50 * time.Millisecond) // wait for async writer to flush
 	return kv.file.Close()
 }
