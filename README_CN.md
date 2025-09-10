@@ -2,8 +2,12 @@
 
 一个基于Go标准库的轻量级HTTP服务骨架，包含动态路由、中间件、优雅关闭等核心功能，适合快速搭建简单API服务或学习HTTP服务开发。
 
+## 文档
+* **[English](docs/en/usage.md)**: Comprehensive guide with examples
+* **[中文](docs/cn/usage.md)**: 中文文档，包含详细的使用说明和示例
+
 ## 功能特性
-- **动态路由**：支持`/hello/{name}`格式的路径参数匹配
+- **动态路由**：支持`/hello/:name`格式的路径参数匹配
 - **中间件系统**：内置日志（Logging）和鉴权（Auth）中间件，支持自定义扩展
 - **优雅关闭**：接收中断信号后5秒内完成连接清理
 - **日志**：支持glog日志库，支持日志级别配置
@@ -34,10 +38,10 @@ make run  # 构建并启动服务（默认端口:8080）
 通过 router.(Get|Post|Delete|Put) 函数注册带参数的路由（示例在 main.go ）：
 
 ```go
-router.Get("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+r.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
     // 使用params["name"]获取路径参数
 })
-router.Get("/users/{id}/posts/{postID}", func(...) {
+r.Get("/users/:id/posts/:postID", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
     // 使用params["id"]和params["postID"]
 })
 ```
@@ -58,7 +62,7 @@ curl -H "X-Token: secret" http://localhost:8080/hello/Alice # {"message":"Hello,
 
 中间件组合使用（示例在 main.go ）：
 ```go
-mux.HandleFunc("/", middleware.Apply(routerHandler, LoggingMiddleware, AuthMiddleware))
+app.Use(app.Logging(), app.Auth())
 ```
 
 ## 运行测试

@@ -21,10 +21,10 @@ var (
 )
 
 type App struct {
-	addr    string
-	envFile string
-	mux     *http.ServeMux
-	router  *router.Router
+	addr    string         // bind address
+	envFile string         // path to .env file
+	mux     *http.ServeMux // http serve mux for router
+	router  *router.Router // router for http request
 }
 
 // Option defines a function type for configuring the App

@@ -16,6 +16,9 @@ jobs:
   ci:
     name: CI - Test & Build Artifacts
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     strategy:
       matrix:
         os: [linux-latest, darwin-latest, windows-latest]

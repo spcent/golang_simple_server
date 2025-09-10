@@ -5,9 +5,14 @@
 A lightweight HTTP server skeleton built with the Go standard library.
 It includes dynamic routing, middleware, graceful shutdown, and environment-based configuration — ideal for quickly building simple APIs or learning HTTP server development.
 
+## Documentation
+
+* **[English](docs/en/usage.md)**: Comprehensive guide with examples
+* **[中文](docs/cn/usage.md)**: 中文文档，包含详细的使用说明和示例
+
 ## Features
 
-* **Dynamic Routing**: Supports path parameters like `/hello/{name}`
+* **Dynamic Routing**: Supports path parameters like `/hello/:name`
 * **Middleware System**: Built-in Logging and Auth middlewares, with support for custom extensions
 * **Graceful Shutdown**: Cleans up connections within 5 seconds after receiving an interrupt signal
 * **Logging**: Add glog logging library for structured logging
@@ -42,10 +47,10 @@ make run   # Build and start the server (default port: 8080)
 Register parameterized routes with `router.(Get|Post|Delete|Put)` (see `main.go` for examples):
 
 ```go
-router.Get("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+r.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
     // Access params["name"]
 })
-router.Get("/users/{id}/posts/{postID}", func(...) {
+r.Get("/users/:id/posts/:postID", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
     // Access params["id"] and params["postID"]
 })
 ```
@@ -67,7 +72,7 @@ curl -H "X-Token: secret" http://localhost:8080/hello/Alice # {"message":"Hello,
 Combine middlewares (see `main.go` for usage):
 
 ```go
-mux.HandleFunc("/", middleware.Apply(routerHandler, LoggingMiddleware, AuthMiddleware))
+app.Use(app.Logging(), app.Auth())
 ```
 
 ## Testing
