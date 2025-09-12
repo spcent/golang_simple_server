@@ -81,13 +81,8 @@ func (r *Router) Register(registrars ...RouteRegistrar) {
 	for _, reg := range registrars {
 		if !seen[reg] {
 			r.registrars = append(r.registrars, reg)
+			reg.Register(r)
 		}
-	}
-}
-
-func (r *Router) Init() {
-	for _, registrar := range r.registrars {
-		registrar.Register(r)
 	}
 }
 

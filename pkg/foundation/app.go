@@ -129,7 +129,6 @@ func (a *App) Boot() {
 		}
 	}
 
-	a.router.Init()
 	// Middleware is applied through the Use() method
 	if os.Getenv("APP_DEBUG") == "true" {
 		a.router.Print(os.Stdout)
