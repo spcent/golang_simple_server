@@ -39,28 +39,32 @@ const (
 	defaultFlushInterval = 50 * time.Millisecond
 	defaultCleanInterval = 30 * time.Second
 
-	magicNumber = 0x4B565354 // "KVST"
+	magicNumber uint32 = 0x4B565354 // "KVST"
 )
 
+// Durability controls when WAL writes are synced to disk
 type Durability int
 
 const (
+	// DurabilityNever - WAL writes are never explicitly synced (fastest, least durable)
 	DurabilityNever Durability = iota
+	// DurabilityEveryFlush - WAL writes are synced after each batch flush
 	DurabilityEveryFlush
+	// DurabilityPerWrite - WAL writes are synced after each individual write (slowest, most durable)
 	DurabilityPerWrite
 )
 
-// Stats provides runtime statistics
+// Stats provides runtime statistics about the KV store
 type Stats struct {
-	Entries      int64
-	Hits         int64
-	Misses       int64
-	Evictions    int64
-	TTLCleanups  int64
-	WALSize      int64
-	MemoryUsage  int64
-	LastSnapshot time.Time
-	LastFlush    time.Time
+	Entries      int64     // Number of entries currently in the store
+	Hits         int64     // Number of successful read operations
+	Misses       int64     // Number of failed read operations (key not found or expired)
+	Evictions    int64     // Number of entries evicted due to LRU or memory limits
+	TTLCleanups  int64     // Number of entries cleaned up due to TTL expiration
+	WALSize      int64     // Current size of the WAL file in bytes
+	MemoryUsage  int64     // Current memory usage in bytes
+	LastSnapshot time.Time // Timestamp of the last snapshot operation
+	LastFlush    time.Time // Timestamp of the last WAL flush operation
 }
 
 type valueWithTTL struct {
@@ -77,51 +81,74 @@ type walEntry struct {
 	Value    []byte
 }
 
+// Options configures the behavior of the KV store
 type Options struct {
-	WALPath        string
-	SnapshotPath   string
-	LogBufferSize  int
-	MaxEntries     int
+	// WALPath is the file path for the Write-Ahead Log
+	WALPath string
+
+	// SnapshotPath is the file path for snapshots (defaults to WALPath + ".snapshot")
+	SnapshotPath string
+
+	// LogBufferSize is the size of the in-memory log buffer for batching WAL writes
+	LogBufferSize int
+
+	// MaxEntries limits the maximum number of entries in the store (0 = unlimited)
+	MaxEntries int
+
+	// MaxMemoryBytes limits the maximum memory usage in bytes (0 = unlimited)
 	MaxMemoryBytes int64
-	CleanInterval  time.Duration
-	FlushInterval  time.Duration
-	BatchSize      int
-	Durability     Durability
-	EnableMetrics  bool
-	ReadOnly       bool
+
+	// CleanInterval is how often to run the TTL cleanup process
+	CleanInterval time.Duration
+
+	// FlushInterval is how often to flush buffered WAL entries to disk
+	FlushInterval time.Duration
+
+	// BatchSize is the maximum number of entries to batch before forcing a WAL flush
+	BatchSize int
+
+	// Durability controls when WAL writes are synced to disk
+	Durability Durability
+
+	// EnableMetrics enables collection of runtime statistics
+	EnableMetrics bool
+
+	// ReadOnly opens the store in read-only mode (no WAL writes)
+	ReadOnly bool
 }
 
+// KVStore is a high-performance, persistent key-value store with LRU eviction and TTL support
 type KVStore struct {
 	// Core data structures
-	mu      sync.RWMutex
-	data    map[string]*list.Element
-	lruList *list.List
+	mu      sync.RWMutex             // Protects data and lruList
+	data    map[string]*list.Element // Map from key to list element
+	lruList *list.List               // LRU list for eviction policy
 
 	// WAL components
-	walFile   *os.File
-	walMmap   []byte
-	walOffset int64
-	walSize   int64
-	walMutex  sync.RWMutex
+	walFile   *os.File     // Write-Ahead Log file handle
+	walMmap   []byte       // Memory-mapped WAL file
+	walOffset int64        // Current write offset in WAL
+	walSize   int64        // Total size of WAL file
+	walMutex  sync.RWMutex // Protects WAL operations
 
 	// Background workers
-	logChan chan walEntry
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	logChan chan walEntry      // Channel for batching WAL writes
+	ctx     context.Context    // Context for coordinating shutdown
+	cancel  context.CancelFunc // Cancel function for shutdown
+	wg      sync.WaitGroup     // WaitGroup for background goroutines
 
 	// Configuration
 	opts Options
 
-	// Metrics
-	stats       atomic.Value // *Stats
-	hitCount    int64
-	missCount   int64
-	evictions   int64
-	ttlCleanups int64
+	// Metrics (using atomic operations for lock-free access)
+	stats       atomic.Value // *Stats - current statistics
+	hitCount    int64        // Atomic counter for cache hits
+	missCount   int64        // Atomic counter for cache misses
+	evictions   int64        // Atomic counter for evictions
+	ttlCleanups int64        // Atomic counter for TTL cleanups
 
 	// State
-	closed int32
+	closed int32 // Atomic flag indicating if store is closed
 }
 
 // NewKVStore creates a new KV store with improved error handling and validation
@@ -225,7 +252,7 @@ func (kv *KVStore) initWAL() error {
 	if size == 0 {
 		size = defaultWALSize
 		if !kv.opts.ReadOnly {
-			if err := file.Truncate(size); err != nil {
+			if err = file.Truncate(size); err != nil {
 				return err
 			}
 		}
@@ -703,23 +730,23 @@ func (kv *KVStore) Snapshot() error {
 			Value:    val.Value,
 		}
 		entryBytes := kv.encodeEntry(entry)
-		if _, err := writer.Write(entryBytes); err != nil {
+		if _, err = writer.Write(entryBytes); err != nil {
 			kv.mu.RUnlock()
 			return err
 		}
 	}
 	kv.mu.RUnlock()
 
-	if err := writer.Flush(); err != nil {
+	if err = writer.Flush(); err != nil {
 		return err
 	}
 
-	if err := f.Sync(); err != nil {
+	if err = f.Sync(); err != nil {
 		return err
 	}
 
 	// Atomic replace
-	if err := os.Rename(tempPath, kv.opts.SnapshotPath); err != nil {
+	if err = os.Rename(tempPath, kv.opts.SnapshotPath); err != nil {
 		return err
 	}
 
@@ -727,11 +754,11 @@ func (kv *KVStore) Snapshot() error {
 	kv.walMutex.Lock()
 	defer kv.walMutex.Unlock()
 
-	if err := syscall.Munmap(kv.walMmap); err != nil {
+	if err = syscall.Munmap(kv.walMmap); err != nil {
 		return err
 	}
 
-	if err := kv.walFile.Truncate(defaultWALSize); err != nil {
+	if err = kv.walFile.Truncate(defaultWALSize); err != nil {
 		return err
 	}
 
