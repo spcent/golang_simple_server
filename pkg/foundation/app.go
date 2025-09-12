@@ -215,7 +215,8 @@ func (a *App) ConfigureWebSocketWithOptions(config WebSocketConfig) *ws.Hub {
 
 	// Register WebSocket handler
 	a.HandleFunc(config.WSRoutePath, func(w http.ResponseWriter, r *http.Request) {
-		ws.ServeWSWithAuth(w, r, hub, wsAuth, config.SendQueueSize, config.SendTimeout, config.SendBehavior)
+		ws.ServeWSWithAuth(w, r, hub, wsAuth, config.SendQueueSize,
+			config.SendTimeout, config.SendBehavior)
 	})
 
 	// Register broadcast endpoint

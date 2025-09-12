@@ -22,7 +22,7 @@ func main() {
 	handlers.RegisterRoutes(app.Router())
 
 	// Apply middleware
-	app.Use(app.Logging(), app.Auth())
+	app.Use(app.Logging())
 
 	// Boot the application
 	app.Boot()

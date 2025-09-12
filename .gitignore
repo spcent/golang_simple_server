@@ -9,6 +9,7 @@
 *.so
 *.dylib
 *.test
+golang_simple_server
 
 # Go coverage files
 *.out

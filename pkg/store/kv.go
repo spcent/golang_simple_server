@@ -1,27 +1,30 @@
 package store
 
 import (
-	"bufio"
 	"container/list"
-	"encoding/json"
+	"encoding/binary"
+	"errors"
 	"os"
+	"runtime"
 	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 )
 
-// KVStore represents a thread-safe in-memory KV store with async persistence and TTL.
-type KVStore struct {
-	data         map[string]*list.Element
-	lruList      *list.List
-	filePath     string
-	file         *os.File
-	mutex        sync.RWMutex
-	logChan      chan entry
-	stopChan     chan struct{}
-	batchSize    int
-	snapshotFreq time.Duration
-	maxEntries   int
-}
+const (
+	opCreate byte = 1
+	opUpdate byte = 2
+	opDelete byte = 3
+)
+
+type Durability int
+
+const (
+	DurabilityNever Durability = iota
+	DurabilityEveryFlush
+	DurabilityPerWrite
+)
 
 type valueWithTTL struct {
 	Key      string
@@ -29,346 +32,325 @@ type valueWithTTL struct {
 	ExpireAt time.Time
 }
 
-type entry struct {
-	Key       string `json:"key"`
-	Value     []byte `json:"value,omitempty"`
-	Op        string `json:"op"` // "create", "update", "delete"
-	ExpireSec int64  `json:"expire_sec,omitempty"`
+type walEntry struct {
+	Op       byte
+	ExpireAt int64
+	Key      []byte
+	Value    []byte
 }
 
-// NewKVStore creates a KVStore with automatic snapshotting and TTL logging
-func NewKVStore(filePath string, logBuffer int, batchSize int, snapshotFreq time.Duration, maxEntries int) (*KVStore, error) {
-	store := &KVStore{
-		data:         make(map[string]*list.Element),
-		lruList:      list.New(),
-		filePath:     filePath,
-		logChan:      make(chan entry, logBuffer),
-		stopChan:     make(chan struct{}),
-		batchSize:    batchSize,
-		snapshotFreq: snapshotFreq,
-		maxEntries:   maxEntries,
+type KVStore struct {
+	data    map[string]*list.Element
+	lruList *list.List
+
+	walFile   *os.File
+	walMmap   []byte
+	walOffset int64
+	walSize   int64
+	walMutex  sync.Mutex
+
+	logChan  chan walEntry
+	stopChan chan struct{}
+	wg       sync.WaitGroup
+
+	durability    Durability
+	maxEntries    int
+	cleanInterval time.Duration
+	snapshotPath  string
+}
+
+// NewKVStoreMMap creates a new KV store
+func NewKVStoreMMap(walPath, snapshotPath string, logBuffer int, maxEntries int, cleanInterval time.Duration, durability Durability) (*KVStore, error) {
+	if cleanInterval <= 0 {
+		cleanInterval = time.Second
 	}
 
-	// Open log file
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	kv := &KVStore{
+		data:          make(map[string]*list.Element),
+		lruList:       list.New(),
+		logChan:       make(chan walEntry, logBuffer),
+		stopChan:      make(chan struct{}),
+		durability:    durability,
+		maxEntries:    maxEntries,
+		cleanInterval: cleanInterval,
+		snapshotPath:  snapshotPath,
+	}
+
+	file, err := os.OpenFile(walPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, err
 	}
-	store.file = file
+	kv.walFile = file
 
-	// Load existing data
-	if err := store.loadFromFile(); err != nil {
+	info, _ := file.Stat()
+	size := info.Size()
+	if size < 1024*1024 {
+		size = 1024 * 1024
+	}
+	if err := syscall.Ftruncate(int(file.Fd()), size); err != nil {
 		return nil, err
 	}
+	mmap, err := syscall.Mmap(int(file.Fd()), 0, int(size), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	if err != nil {
+		return nil, err
+	}
+	kv.walMmap = mmap
+	kv.walSize = size
+	kv.walOffset = 0
 
-	// Start async log writer
-	go store.asyncLogWriter()
+	kv.wg.Add(1)
+	go kv.asyncLogWriter()
+	kv.wg.Add(1)
+	go kv.ttlCleaner()
 
-	// Start TTL cleaner
-	go store.ttlCleaner()
-	go store.autoSnapshot()
-
-	return store, nil
+	return kv, nil
 }
 
-// loadFromFile reconstructs the in-memory data from log file.
-func (kv *KVStore) loadFromFile() error {
-	scanner := bufio.NewScanner(kv.file)
-	for scanner.Scan() {
-		var e entry
-		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
-			continue
-		}
-		switch e.Op {
-		case "create", "update":
-			expireAt := time.Time{}
-			if e.ExpireSec > 0 {
-				expireAt = time.Now().Add(time.Duration(e.ExpireSec) * time.Second)
-			}
-			elem := kv.lruList.PushFront(valueWithTTL{Key: e.Key, Value: e.Value, ExpireAt: expireAt})
-			kv.data[e.Key] = elem
-		case "delete":
-			if elem, ok := kv.data[e.Key]; ok {
-				kv.lruList.Remove(elem)
-				delete(kv.data, e.Key)
-			}
-		}
-	}
-	return scanner.Err()
-}
+// -------------------- In-Memory Operations --------------------
 
-// Create adds a new key-value pair with optional TTL in seconds.
-func (kv *KVStore) Create(key string, value []byte, ttl int64) error {
-	kv.mutex.Lock()
-	defer kv.mutex.Unlock()
-
-	if _, exists := kv.data[key]; exists {
-		return os.ErrExist
+func (kv *KVStore) insertInMemory(key string, value []byte, expireAt time.Time) {
+	if elem, ok := kv.data[key]; ok {
+		elem.Value = valueWithTTL{Key: key, Value: value, ExpireAt: expireAt}
+		kv.lruList.MoveToFront(elem)
+		return
 	}
-	if kv.lruList.Len() >= kv.maxEntries {
+	if kv.maxEntries > 0 && kv.lruList.Len() >= kv.maxEntries {
 		kv.evictLRU()
 	}
-
-	expireAt := time.Time{}
-	if ttl > 0 {
-		expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
-	}
-
 	elem := kv.lruList.PushFront(valueWithTTL{Key: key, Value: value, ExpireAt: expireAt})
 	kv.data[key] = elem
-	kv.logChan <- entry{Key: key, Value: value, Op: "create", ExpireSec: ttl}
-	return nil
 }
 
-// Read returns value if key exists and is not expired.
-func (kv *KVStore) Read(key string) ([]byte, bool) {
-	kv.mutex.Lock()
-	defer kv.mutex.Unlock()
-	elem, ok := kv.data[key]
-	if !ok {
-		return nil, false
+func (kv *KVStore) deleteInMemory(key string) {
+	if elem, ok := kv.data[key]; ok {
+		kv.lruList.Remove(elem)
+		delete(kv.data, key)
 	}
-
-	val := elem.Value.(valueWithTTL)
-	if !val.ExpireAt.IsZero() && time.Now().After(val.ExpireAt) {
-		kv.removeElement(elem)
-		kv.logChan <- entry{Key: key, Op: "delete"}
-		return nil, false
-	}
-
-	kv.lruList.MoveToFront(elem)
-	return val.Value, true
-}
-
-// Update modifies existing key-value. Returns error if key does not exist.
-func (kv *KVStore) Update(key string, value []byte, ttl int64) error {
-	kv.mutex.Lock()
-	defer kv.mutex.Unlock()
-
-	elem, ok := kv.data[key]
-	if !ok {
-		return os.ErrNotExist
-	}
-
-	expireAt := time.Time{}
-	if ttl > 0 {
-		expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
-	}
-
-	elem.Value = valueWithTTL{Key: key, Value: value, ExpireAt: expireAt}
-	kv.lruList.MoveToFront(elem)
-	kv.logChan <- entry{Key: key, Value: value, Op: "update", ExpireSec: ttl}
-	return nil
-}
-
-// Delete removes a key-value pair.
-func (kv *KVStore) Delete(key string) error {
-	kv.mutex.Lock()
-	defer kv.mutex.Unlock()
-	elem, ok := kv.data[key]
-	if ok {
-		kv.removeElement(elem)
-		kv.logChan <- entry{Key: key, Op: "delete"}
-	}
-	return nil
 }
 
 func (kv *KVStore) evictLRU() {
-	if kv.lruList.Len() == 0 {
+	back := kv.lruList.Back()
+	if back == nil {
 		return
 	}
-	elem := kv.lruList.Back()
-	if elem != nil {
-		kv.removeElement(elem)
-		val := elem.Value.(valueWithTTL)
-		kv.logChan <- entry{Key: val.Key, Op: "delete"} // log eviction
+	v := back.Value.(valueWithTTL)
+	kv.lruList.Remove(back)
+	delete(kv.data, v.Key)
+	kv.enqueueLog(walEntry{Op: opDelete, ExpireAt: 0, Key: []byte(v.Key)})
+}
+
+func (kv *KVStore) enqueueLog(e walEntry) {
+	select {
+	case kv.logChan <- e:
+	default:
+		go func() { kv.logChan <- e }()
 	}
 }
 
-func (kv *KVStore) removeElement(elem *list.Element) {
-	val := elem.Value.(valueWithTTL)
-	delete(kv.data, val.Key)
-	kv.lruList.Remove(elem)
-}
+// -------------------- Async WAL Writer --------------------
 
-func (kv *KVStore) MCreate(kvs map[string][]byte, ttl int64) error {
-	kv.mutex.Lock()
-	defer kv.mutex.Unlock()
-	for k := range kvs {
-		if _, exists := kv.data[k]; exists {
-			return os.ErrExist
-		}
-	}
-	for k, v := range kvs {
-		if kv.lruList.Len() >= kv.maxEntries {
-			kv.evictLRU()
-		}
-		expireAt := time.Time{}
-		if ttl > 0 {
-			expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
-		}
-		elem := kv.lruList.PushFront(valueWithTTL{Key: k, Value: v, ExpireAt: expireAt})
-		kv.data[k] = elem
-		kv.logChan <- entry{Key: k, Value: v, Op: "create", ExpireSec: ttl}
-	}
-	return nil
-}
-
-func (kv *KVStore) MRead(keys []string) map[string][]byte {
-	kv.mutex.Lock()
-	defer kv.mutex.Unlock()
-	res := make(map[string][]byte)
-	for _, k := range keys {
-		if elem, ok := kv.data[k]; ok {
-			val := elem.Value.(valueWithTTL)
-			if val.ExpireAt.IsZero() || time.Now().Before(val.ExpireAt) {
-				res[k] = val.Value
-				kv.lruList.MoveToFront(elem)
-			} else {
-				kv.removeElement(elem)
-				kv.logChan <- entry{Key: k, Op: "delete"}
-			}
-		}
-	}
-	return res
-}
-
-func (kv *KVStore) MUpdate(kvs map[string][]byte, ttl int64) error {
-	kv.mutex.Lock()
-	defer kv.mutex.Unlock()
-	for k, v := range kvs {
-		elem, ok := kv.data[k]
-		if !ok {
-			return os.ErrNotExist
-		}
-		expireAt := time.Time{}
-		if ttl > 0 {
-			expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
-		}
-		elem.Value = valueWithTTL{Key: k, Value: v, ExpireAt: expireAt}
-		kv.lruList.MoveToFront(elem)
-		kv.logChan <- entry{Key: k, Value: v, Op: "update", ExpireSec: ttl}
-	}
-	return nil
-}
-
-func (kv *KVStore) MDelete(keys []string) error {
-	kv.mutex.Lock()
-	defer kv.mutex.Unlock()
-	for _, k := range keys {
-		if elem, ok := kv.data[k]; ok {
-			kv.removeElement(elem)
-			kv.logChan <- entry{Key: k, Op: "delete"}
-		}
-	}
-	return nil
-}
-
-// asyncLogWriter writes log entries to disk asynchronously.
 func (kv *KVStore) asyncLogWriter() {
+	defer kv.wg.Done()
+	batch := []walEntry{}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	buffer := make([]entry, 0, kv.batchSize)
-
-	flush := func() {
-		if len(buffer) == 0 {
-			return
-		}
-		for _, e := range buffer {
-			b, _ := json.Marshal(e)
-			kv.file.Write(append(b, '\n'))
-		}
-		kv.file.Sync()
-		buffer = buffer[:0]
-	}
-
 	for {
 		select {
 		case e := <-kv.logChan:
-			buffer = append(buffer, e)
-			if len(buffer) >= kv.batchSize {
-				flush()
+			batch = append(batch, e)
+			if len(batch) >= 64 {
+				kv.flushBatch(batch)
+				batch = batch[:0]
 			}
 		case <-ticker.C:
-			flush()
+			if len(batch) > 0 {
+				kv.flushBatch(batch)
+				batch = batch[:0]
+			}
 		case <-kv.stopChan:
-			flush()
+			if len(batch) > 0 {
+				kv.flushBatch(batch)
+			}
 			return
 		}
 	}
 }
 
-// ttlCleaner periodically removes expired keys.
+func (kv *KVStore) flushBatch(batch []walEntry) {
+	kv.walMutex.Lock()
+	defer kv.walMutex.Unlock()
+	for _, e := range batch {
+		entryBytes := encodeEntry(e)
+		if int64(len(entryBytes))+kv.walOffset > kv.walSize {
+			kv.expandMMap(len(entryBytes))
+		}
+		copy(kv.walMmap[kv.walOffset:], entryBytes)
+		kv.walOffset += int64(len(entryBytes))
+		if kv.durability == DurabilityPerWrite {
+			kv.flushMMap()
+		}
+	}
+	if kv.durability == DurabilityEveryFlush {
+		kv.flushMMap()
+	}
+}
+
+func (kv *KVStore) flushMMap() error {
+	if len(kv.walMmap) == 0 {
+		return nil
+	}
+
+	// Try Unix-style msync
+	addr := uintptr(unsafe.Pointer(&kv.walMmap[0]))
+	length := uintptr(len(kv.walMmap))
+
+	// Some OS (e.g. Windows) does not support SYS_MSYNC
+	// so we check runtime.GOOS
+	switch runtime.GOOS {
+	case "linux", "darwin", "freebsd", "openbsd", "netbsd":
+		// Perform msync system call
+		_, _, errno := syscall.Syscall(syscall.SYS_MSYNC, addr, length, syscall.MS_SYNC)
+		if errno != 0 {
+			// If msync fails, fallback to file.Sync
+			if err := kv.walFile.Sync(); err != nil {
+				return err
+			}
+		}
+	default:
+		// Non-Unix platforms (e.g. Windows) fallback
+		if err := kv.walFile.Sync(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (kv *KVStore) expandMMap(min int) {
+	newSize := kv.walSize*2 + int64(min)
+	_ = syscall.Munmap(kv.walMmap)
+	_ = kv.walFile.Truncate(newSize)
+	mmap, _ := syscall.Mmap(int(kv.walFile.Fd()), 0, int(newSize), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	kv.walMmap = mmap
+	kv.walSize = newSize
+}
+
+// -------------------- TTL Cleaner --------------------
+
 func (kv *KVStore) ttlCleaner() {
-	ticker := time.NewTicker(1 * time.Second)
+	defer kv.wg.Done()
+	ticker := time.NewTicker(kv.cleanInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			now := time.Now()
-			kv.mutex.Lock()
-			for _, elem := range kv.data {
+			for k, elem := range kv.data {
 				val := elem.Value.(valueWithTTL)
 				if !val.ExpireAt.IsZero() && now.After(val.ExpireAt) {
-					kv.removeElement(elem)
-					kv.logChan <- entry{Key: val.Key, Op: "delete"}
+					kv.deleteInMemory(k)
+					kv.enqueueLog(walEntry{Op: opDelete, ExpireAt: 0, Key: []byte(k)})
 				}
 			}
-			kv.mutex.Unlock()
 		case <-kv.stopChan:
 			return
 		}
 	}
 }
 
-func (kv *KVStore) autoSnapshot() {
-	if kv.snapshotFreq <= 0 {
-		return
+// -------------------- Public CRUD --------------------
+
+func (kv *KVStore) Create(key string, value []byte, ttlSeconds int64) error {
+	if _, ok := kv.data[key]; ok {
+		return errors.New("key exists")
 	}
-	ticker := time.NewTicker(kv.snapshotFreq)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			kv.Snapshot()
-		case <-kv.stopChan:
-			return
-		}
+	var expireAt time.Time
+	if ttlSeconds > 0 {
+		expireAt = time.Now().Add(time.Duration(ttlSeconds) * time.Second)
 	}
+	kv.insertInMemory(key, value, expireAt)
+	kv.enqueueLog(walEntry{Op: opCreate, ExpireAt: expireAt.UnixNano(), Key: []byte(key), Value: value})
+	return nil
 }
 
-// Snapshot writes all in-memory data to a new file and replaces old log.
+func (kv *KVStore) Read(key string) ([]byte, bool) {
+	elem, ok := kv.data[key]
+	if !ok {
+		return nil, false
+	}
+	v := elem.Value.(valueWithTTL)
+	if !v.ExpireAt.IsZero() && time.Now().After(v.ExpireAt) {
+		kv.deleteInMemory(key)
+		kv.enqueueLog(walEntry{Op: opDelete, ExpireAt: 0, Key: []byte(key)})
+		return nil, false
+	}
+	return append([]byte(nil), v.Value...), true
+}
+
+func (kv *KVStore) Update(key string, value []byte, ttlSeconds int64) error {
+	elem, ok := kv.data[key]
+	if !ok {
+		return errors.New("key not exist")
+	}
+	var expireAt time.Time
+	if ttlSeconds > 0 {
+		expireAt = time.Now().Add(time.Duration(ttlSeconds) * time.Second)
+	}
+	elem.Value = valueWithTTL{Key: key, Value: value, ExpireAt: expireAt}
+	kv.enqueueLog(walEntry{Op: opUpdate, ExpireAt: expireAt.UnixNano(), Key: []byte(key), Value: value})
+	return nil
+}
+
+func (kv *KVStore) Delete(key string) error {
+	kv.deleteInMemory(key)
+	kv.enqueueLog(walEntry{Op: opDelete, ExpireAt: 0, Key: []byte(key)})
+	return nil
+}
+
+// -------------------- Snapshot --------------------
+
 func (kv *KVStore) Snapshot() error {
-	kv.mutex.RLock()
-	defer kv.mutex.RUnlock()
-
-	tmpFile := kv.filePath + ".tmp"
-	f, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	f, err := os.Create(kv.snapshotPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-
-	for elem := kv.lruList.Front(); elem != nil; elem = elem.Next() {
-		val := elem.Value.(valueWithTTL)
-		ttl := int64(0)
-		if !val.ExpireAt.IsZero() {
-			ttl = int64(time.Until(val.ExpireAt).Seconds())
-		}
-		e := entry{Key: val.Key, Value: val.Value, Op: "create", ExpireSec: ttl}
-		b, _ := json.Marshal(e)
-		f.Write(append(b, '\n'))
+	for k, elem := range kv.data {
+		v := elem.Value.(valueWithTTL)
+		e := walEntry{Op: opCreate, ExpireAt: v.ExpireAt.UnixNano(), Key: []byte(k), Value: v.Value}
+		_, _ = f.Write(encodeEntry(e))
 	}
-
-	kv.file.Close()
-	os.Rename(tmpFile, kv.filePath)
-	kv.file, _ = os.OpenFile(kv.filePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	// Reset WAL
+	kv.walMutex.Lock()
+	defer kv.walMutex.Unlock()
+	_ = syscall.Munmap(kv.walMmap)
+	_ = kv.walFile.Truncate(1024 * 1024)
+	mmap, _ := syscall.Mmap(int(kv.walFile.Fd()), 0, 1024*1024, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	kv.walMmap = mmap
+	kv.walSize = 1024 * 1024
+	kv.walOffset = 0
 	return nil
 }
 
-// Close gracefully stops background goroutines and flushes logs.
-func (kv *KVStore) Close() error {
+// -------------------- Close --------------------
+
+func (kv *KVStore) Close() {
 	close(kv.stopChan)
-	time.Sleep(50 * time.Millisecond) // wait for async writer to flush
-	return kv.file.Close()
+	kv.wg.Wait()
+	_ = syscall.Munmap(kv.walMmap)
+	_ = kv.walFile.Close()
+}
+
+// -------------------- Helper --------------------
+
+func encodeEntry(e walEntry) []byte {
+	keyLen := uint32(len(e.Key))
+	valLen := uint32(len(e.Value))
+	buf := make([]byte, 1+8+4+4+len(e.Key)+len(e.Value))
+	buf[0] = e.Op
+	binary.LittleEndian.PutUint64(buf[1:], uint64(e.ExpireAt))
+	binary.LittleEndian.PutUint32(buf[9:], keyLen)
+	binary.LittleEndian.PutUint32(buf[13:], valLen)
+	copy(buf[17:], e.Key)
+	copy(buf[17+len(e.Key):], e.Value)
+	return buf
 }
