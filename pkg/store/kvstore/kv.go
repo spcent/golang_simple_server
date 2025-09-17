@@ -56,14 +56,16 @@ const (
 // Memory pools for reducing GC pressure
 var (
 	entryPool = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 0, 1024)
+		New: func() any {
+			buf := make([]byte, 0, 1024)
+			return &buf
 		},
 	}
 
 	stringSlicePool = sync.Pool{
-		New: func() interface{} {
-			return make([]string, 0, 64)
+		New: func() any {
+			buf := make([]string, 0, 64)
+			return &buf
 		},
 	}
 )
@@ -87,26 +89,6 @@ const (
 	CompressionNone CompressionType = iota
 	CompressionGzip
 )
-
-// Stats provides comprehensive runtime statistics about the KV store
-type Stats struct {
-	Entries             int64         `json:"entries"`              // Number of entries currently in the store
-	Hits                int64         `json:"hits"`                 // Number of successful read operations
-	Misses              int64         `json:"misses"`               // Number of failed read operations (key not found or expired)
-	Evictions           int64         `json:"evictions"`            // Number of entries evicted due to LRU or memory limits
-	TTLCleanups         int64         `json:"ttl_cleanups"`         // Number of entries cleaned up due to TTL expiration
-	WALSize             int64         `json:"wal_size"`             // Current size of the WAL file in bytes
-	MemoryUsage         int64         `json:"memory_usage"`         // Current memory usage in bytes
-	LastSnapshot        time.Time     `json:"last_snapshot"`        // Timestamp of the last snapshot operation
-	LastFlush           time.Time     `json:"last_flush"`           // Timestamp of the last WAL flush operation
-	WALFlushLatency     time.Duration `json:"wal_flush_latency"`    // Average WAL flush latency
-	SnapshotSize        int64         `json:"snapshot_size"`        // Size of the last snapshot
-	ExpiredKeysPerSec   float64       `json:"expired_keys_per_sec"` // Rate of key expiration
-	HitRatio            float64       `json:"hit_ratio"`            // Cache hit ratio
-	MemoryFragmentation float64       `json:"memory_fragmentation"` // Memory fragmentation ratio
-	WALFlushCount       int64         `json:"wal_flush_count"`      // Total WAL flush operations
-	CompactionCount     int64         `json:"compaction_count"`     // Total compaction operations
-}
 
 type valueWithTTL struct {
 	Key      string
@@ -702,8 +684,8 @@ func (kv *KVStore) cleanExpiredKeys() {
 	startTime := now
 
 	for _, shard := range kv.shards {
-		expired := stringSlicePool.Get().([]string)
-		expired = expired[:0]
+		expiredPtr := stringSlicePool.Get().(*[]string)
+		expired := (*expiredPtr)[:0]
 
 		shard.mu.RLock()
 		for key, elem := range shard.data {
@@ -737,7 +719,7 @@ func (kv *KVStore) cleanExpiredKeys() {
 			atomic.AddInt64(&kv.ttlCleanups, int64(len(expired)))
 		}
 
-		stringSlicePool.Put(expired)
+		stringSlicePool.Put(&expired)
 	}
 
 	// Update expiration rate
@@ -992,28 +974,6 @@ func (kv *KVStore) replayWAL() error {
 }
 
 // -------------------- Statistics and Utilities --------------------
-
-func (kv *KVStore) GetStats() Stats {
-	stats := kv.stats.Load().(*Stats)
-	newStats := *stats
-	newStats.Hits = atomic.LoadInt64(&kv.hitCount)
-	newStats.Misses = atomic.LoadInt64(&kv.missCount)
-	newStats.Evictions = atomic.LoadInt64(&kv.evictions)
-	newStats.TTLCleanups = atomic.LoadInt64(&kv.ttlCleanups)
-	newStats.CompactionCount = atomic.LoadInt64(&kv.compactionCount)
-
-	// Calculate derived metrics
-	if newStats.Hits+newStats.Misses > 0 {
-		newStats.HitRatio = float64(newStats.Hits) / float64(newStats.Hits+newStats.Misses)
-	}
-
-	if flushCount := atomic.LoadInt64(&kv.flushCount); flushCount > 0 {
-		newStats.WALFlushLatency = time.Duration(atomic.LoadInt64(&kv.flushLatencySum) / flushCount)
-	}
-
-	return newStats
-}
-
 func (kv *KVStore) updateStats(fn func(*Stats)) {
 	if !kv.opts.EnableMetrics {
 		return
@@ -1076,8 +1036,8 @@ func (kv *KVStore) encodeEntry(e walEntry) []byte {
 	keyLen := uint32(len(e.Key))
 	valLen := uint32(len(e.Value))
 
-	buf := entryPool.Get().([]byte)
-	buf = buf[:0] // Reset length but keep capacity
+	bufPtr := entryPool.Get().(*[]byte)
+	buf := (*bufPtr)[:0] // Reset length but keep capacity
 
 	// Ensure sufficient capacity
 	needed := entryHeaderSize + 8 + len(e.Key) + len(e.Value) // +8 for version
@@ -1119,7 +1079,7 @@ func (kv *KVStore) encodeEntry(e walEntry) []byte {
 	result := make([]byte, len(buf))
 	copy(result, buf)
 
-	entryPool.Put(buf)
+	entryPool.Put(&buf)
 	return result
 }
 
