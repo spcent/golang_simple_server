@@ -3,21 +3,18 @@ package kvstore
 import (
 	"bufio"
 	"compress/gzip"
-	"container/list"
 	"context"
-	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
+	"sort"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
-	"unsafe"
 )
 
 var (
@@ -28,234 +25,142 @@ var (
 	ErrInvalidEntry       = errors.New("invalid WAL entry")
 	ErrCloseTimeout       = errors.New("close operation timed out")
 	ErrTransactionAborted = errors.New("transaction aborted")
-	ErrInvalidPath        = errors.New("invalid file path")
-	ErrPermissionDenied   = errors.New("permission denied")
 )
 
 const (
-	opCreate byte = 1
-	opUpdate byte = 2
-	opDelete byte = 3
+	opSet    byte = 1
+	opDelete byte = 2
 
-	// Entry format: [CRC32(4)] [Op(1)] [ExpireAt(8)] [KeyLen(4)] [ValueLen(4)] [Key] [Value]
-	entryHeaderSize = 4 + 1 + 8 + 4 + 4 // 21 bytes
-
-	defaultWALSize       = 64 * 1024 * 1024 // 64MB
-	defaultBatchSize     = 128
-	defaultFlushInterval = 50 * time.Millisecond
+	defaultMaxEntries    = 100000
+	defaultMaxMemoryMB   = 200
+	defaultFlushInterval = 100 * time.Millisecond
 	defaultCleanInterval = 30 * time.Second
 	defaultShardCount    = 16
-	defaultCloseTimeout  = 30 * time.Second
+	defaultCloseTimeout  = 10 * time.Second
 
 	magicNumber uint32 = 0x4B565354 // "KVST"
-	version     uint32 = 2
-
-	maxStatsUpdateRetries = 100
+	version     uint32 = 1
 )
 
-// Memory pools for reducing GC pressure
-var (
-	entryPool = sync.Pool{
-		New: func() any {
-			buf := make([]byte, 0, 1024)
-			return &buf
-		},
-	}
-
-	stringSlicePool = sync.Pool{
-		New: func() any {
-			buf := make([]string, 0, 64)
-			return &buf
-		},
-	}
-)
-
-// Durability controls when WAL writes are synced to disk
-type Durability int
-
-const (
-	// DurabilityNever - WAL writes are never explicitly synced (fastest, least durable)
-	DurabilityNever Durability = iota
-	// DurabilityEveryFlush - WAL writes are synced after each batch flush
-	DurabilityEveryFlush
-	// DurabilityPerWrite - WAL writes are synced after each individual write (slowest, most durable)
-	DurabilityPerWrite
-)
-
-// CompressionType defines the compression algorithm
-type CompressionType int
-
-const (
-	CompressionNone CompressionType = iota
-	CompressionGzip
-)
-
-type valueWithTTL struct {
-	Key      string
-	Value    []byte
-	ExpireAt time.Time
-	Size     int64 // for memory usage tracking
-	Version  int64 // for transaction support
+// Entry represents a key-value pair with metadata
+type Entry struct {
+	Key      string    `json:"key"`
+	Value    []byte    `json:"value"`
+	ExpireAt time.Time `json:"expire_at"`
+	Size     int64     `json:"size"`
+	Version  int64     `json:"version"`
 }
 
-type walEntry struct {
-	Op       byte
-	ExpireAt int64
-	Key      []byte
-	Value    []byte
-	Version  int64
+// WALEntry represents a Write-Ahead Log entry
+type WALEntry struct {
+	Op       byte      `json:"op"`
+	Key      string    `json:"key"`
+	Value    []byte    `json:"value,omitempty"`
+	ExpireAt time.Time `json:"expire_at,omitempty"`
+	Version  int64     `json:"version"`
+	CRC      uint32    `json:"crc"`
 }
 
-// Options configures the behavior of the KV store
+// Options configures the KV store
 type Options struct {
-	// WALPath is the file path for the Write-Ahead Log
-	WALPath string
-
-	// SnapshotPath is the file path for snapshots (defaults to WALPath + ".snapshot")
-	SnapshotPath string
-
-	// LogBufferSize is the size of the in-memory log buffer for batching WAL writes
-	LogBufferSize int
-
-	// MaxEntries limits the maximum number of entries in the store (0 = unlimited)
-	MaxEntries int
-
-	// MaxMemoryBytes limits the maximum memory usage in bytes (0 = unlimited)
-	MaxMemoryBytes int64
-
-	// CleanInterval is how often to run the TTL cleanup process
-	CleanInterval time.Duration
-
-	// FlushInterval is how often to flush buffered WAL entries to disk
-	FlushInterval time.Duration
-
-	// BatchSize is the maximum number of entries to batch before forcing a WAL flush
-	BatchSize int
-
-	// Durability controls when WAL writes are synced to disk
-	Durability Durability
-
-	// EnableMetrics enables collection of runtime statistics
-	EnableMetrics bool
-
-	// ReadOnly opens the store in read-only mode (no WAL writes)
-	ReadOnly bool
-
-	// EnableCompression enables data compression in snapshots and WAL
-	EnableCompression bool
-
-	// CompressionType specifies the compression algorithm
-	CompressionType CompressionType
-
-	// CompressionLevel controls compression trade-off (1=fast, 9=best compression)
-	CompressionLevel int
-
-	// ShardCount enables sharding to reduce lock contention (must be power of 2)
-	ShardCount int
-
-	// CloseTimeout is the maximum time to wait for graceful shutdown
-	CloseTimeout time.Duration
-
-	// EnableTransactions enables simple transaction support
-	EnableTransactions bool
+	DataDir           string        `json:"data_dir"`
+	MaxEntries        int           `json:"max_entries"`
+	MaxMemoryMB       int           `json:"max_memory_mb"`
+	FlushInterval     time.Duration `json:"flush_interval"`
+	CleanInterval     time.Duration `json:"clean_interval"`
+	ShardCount        int           `json:"shard_count"`
+	EnableCompression bool          `json:"enable_compression"`
+	ReadOnly          bool          `json:"read_only"`
+	CloseTimeout      time.Duration `json:"close_timeout"`
 }
 
-// Shard represents a single shard of the key-value store
+// Shard represents a single data shard
 type Shard struct {
 	mu      sync.RWMutex
-	data    map[string]*list.Element
-	lruList *list.List
+	data    map[string]*Entry
+	lruHead *Entry
+	lruTail *Entry
+	next    map[*Entry]*Entry // LRU next pointers
+	prev    map[*Entry]*Entry // LRU prev pointers
 }
 
-// KVStore is a high-performance, persistent key-value store with LRU eviction and TTL support
+// KVStore is a simplified, high-performance key-value store
 type KVStore struct {
-	// Core data structures (sharded for better concurrency)
-	shards    []*Shard // Sharded data structures
-	shardMask uint32   // For fast modulo operation
-
-	// WAL components
-	walFile   *os.File     // Write-Ahead Log file handle
-	walMmap   []byte       // Memory-mapped WAL file
-	walOffset int64        // Current write offset in WAL
-	walSize   int64        // Total size of WAL file
-	walMutex  sync.RWMutex // Protects WAL operations
-
-	// Background workers
-	logChan       chan walEntry      // Channel for batching WAL writes
-	cleanupChan   chan string        // Channel for expired key cleanup
-	ctx           context.Context    // Context for coordinating shutdown
-	cancel        context.CancelFunc // Cancel function for shutdown
-	wg            sync.WaitGroup     // WaitGroup for background goroutines
-	workerPool    chan struct{}      // Worker pool for async operations
-	cleanupWorker chan struct{}      // Cleanup worker semaphore
-
 	// Configuration
 	opts Options
 
-	// Metrics (using atomic operations for lock-free access)
-	stats            atomic.Value // *Stats - current statistics
-	hitCount         int64        // Atomic counter for cache hits
-	missCount        int64        // Atomic counter for cache misses
-	evictions        int64        // Atomic counter for evictions
-	ttlCleanups      int64        // Atomic counter for TTL cleanups
-	flushCount       int64        // Atomic counter for WAL flushes
-	compactionCount  int64        // Atomic counter for compactions
-	lastFlushLatency int64        // Last flush latency in nanoseconds
-	globalVersion    int64        // Global version counter for transactions
+	// Sharded data
+	shards    []*Shard
+	shardMask uint32
+
+	// WAL
+	walFile   *os.File
+	walWriter *bufio.Writer
+	walMutex  sync.Mutex
+	logChan   chan WALEntry
+
+	// Background workers
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+
+	// Statistics (atomic)
+	hits        int64
+	misses      int64
+	evictions   int64
+	entries     int64
+	memoryUsage int64
+	walSize     int64
+	version     int64
 
 	// State
-	closed int32 // Atomic flag indicating if store is closed
-
-	// Performance tracking
-	flushLatencySum int64 // Sum of flush latencies for averaging
+	closed int32
 }
 
-// Transaction represents a simple transaction
-type Transaction struct {
-	kv         *KVStore
-	operations []txnOp
-	readSet    map[string]int64 // key -> version
-	startTime  time.Time
-	mu         sync.Mutex
+// Stats provides runtime statistics
+type Stats struct {
+	Entries     int64   `json:"entries"`
+	Hits        int64   `json:"hits"`
+	Misses      int64   `json:"misses"`
+	Evictions   int64   `json:"evictions"`
+	MemoryUsage int64   `json:"memory_usage"`
+	WALSize     int64   `json:"wal_size"`
+	HitRatio    float64 `json:"hit_ratio"`
 }
 
-type txnOp struct {
-	op    byte
-	key   string
-	value []byte
-	ttl   int64
-}
-
-// NewKVStore creates a new KV store with comprehensive error handling and validation
+// NewKVStore creates a new KV store
 func NewKVStore(opts Options) (*KVStore, error) {
-	if err := validateOptions(&opts); err != nil {
-		return nil, fmt.Errorf("invalid options: %w", err)
+	if err := setDefaults(&opts); err != nil {
+		return nil, err
 	}
 
-	setDefaultOptions(&opts)
+	if err := validateOptions(&opts); err != nil {
+		return nil, err
+	}
+
+	// Create data directory
+	if err := os.MkdirAll(opts.DataDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create data directory: %w", err)
+	}
 
 	// Initialize shards
-	shardCount := opts.ShardCount
-	shards := make([]*Shard, shardCount)
-	for i := 0; i < shardCount; i++ {
+	shards := make([]*Shard, opts.ShardCount)
+	for i := 0; i < opts.ShardCount; i++ {
 		shards[i] = &Shard{
-			data:    make(map[string]*list.Element),
-			lruList: list.New(),
+			data: make(map[string]*Entry),
+			next: make(map[*Entry]*Entry),
+			prev: make(map[*Entry]*Entry),
 		}
 	}
 
 	kv := &KVStore{
-		shards:        shards,
-		shardMask:     uint32(shardCount - 1),
-		logChan:       make(chan walEntry, opts.LogBufferSize),
-		cleanupChan:   make(chan string, opts.LogBufferSize),
-		workerPool:    make(chan struct{}, runtime.NumCPU()),
-		cleanupWorker: make(chan struct{}, 1),
-		opts:          opts,
+		opts:      opts,
+		shards:    shards,
+		shardMask: uint32(opts.ShardCount - 1),
+		logChan:   make(chan WALEntry, 1000),
 	}
 
 	kv.ctx, kv.cancel = context.WithCancel(context.Background())
-	kv.stats.Store(&Stats{})
 
 	// Initialize WAL
 	if !opts.ReadOnly {
@@ -264,406 +169,141 @@ func NewKVStore(opts Options) (*KVStore, error) {
 		}
 
 		// Start background workers
-		kv.wg.Add(3)
-		go kv.asyncLogWriter()
-		go kv.ttlCleaner()
-		go kv.asyncCleanupWorker()
+		kv.wg.Add(2)
+		go kv.writeWal()
+		go kv.cleaner()
 	}
 
 	// Load existing data
-	if err := kv.loadFromSnapshot(); err != nil {
+	if err := kv.loadData(); err != nil {
 		kv.Close()
-		return nil, fmt.Errorf("failed to load snapshot: %w", err)
-	}
-
-	if err := kv.replayWAL(); err != nil {
-		kv.Close()
-		return nil, fmt.Errorf("failed to replay WAL: %w", err)
+		return nil, fmt.Errorf("failed to load data: %w", err)
 	}
 
 	return kv, nil
 }
 
-func validateOptions(opts *Options) error {
-	if opts.WALPath == "" {
-		return errors.New("WAL path is required")
+func setDefaults(opts *Options) error {
+	if opts.DataDir == "" {
+		opts.DataDir = "data"
 	}
-
-	// Check path permissions
-	if dir := filepath.Dir(opts.WALPath); dir != "." {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				return fmt.Errorf("%w: cannot create directory %s", ErrPermissionDenied, dir)
-			}
-		}
+	if opts.MaxEntries == 0 {
+		opts.MaxEntries = defaultMaxEntries
 	}
-
-	if opts.LogBufferSize <= 0 {
-		return errors.New("log buffer size must be positive")
-	}
-
-	if opts.BatchSize <= 0 {
-		return errors.New("batch size must be positive")
-	}
-
-	if opts.FlushInterval < time.Millisecond {
-		return errors.New("flush interval too small (minimum 1ms)")
-	}
-
-	if opts.MaxEntries < 0 {
-		return errors.New("max entries cannot be negative")
-	}
-
-	if opts.MaxMemoryBytes < 0 {
-		return errors.New("max memory bytes cannot be negative")
-	}
-
-	if opts.ShardCount <= 0 || (opts.ShardCount&(opts.ShardCount-1)) != 0 {
-		return errors.New("shard count must be a power of 2")
-	}
-
-	if opts.EnableCompression && (opts.CompressionLevel < 1 || opts.CompressionLevel > 9) {
-		return errors.New("compression level must be between 1 and 9")
-	}
-
-	return nil
-}
-
-func setDefaultOptions(opts *Options) {
-	if opts.LogBufferSize == 0 {
-		opts.LogBufferSize = 1000
-	}
-	if opts.CleanInterval == 0 {
-		opts.CleanInterval = defaultCleanInterval
+	if opts.MaxMemoryMB == 0 {
+		opts.MaxMemoryMB = defaultMaxMemoryMB
 	}
 	if opts.FlushInterval == 0 {
 		opts.FlushInterval = defaultFlushInterval
 	}
-	if opts.BatchSize == 0 {
-		opts.BatchSize = defaultBatchSize
+	if opts.CleanInterval == 0 {
+		opts.CleanInterval = defaultCleanInterval
 	}
 	if opts.ShardCount == 0 {
 		opts.ShardCount = defaultShardCount
 	}
-	if opts.SnapshotPath == "" {
-		opts.SnapshotPath = opts.WALPath + ".snapshot"
-	}
-	if opts.CompressionLevel == 0 {
-		opts.CompressionLevel = 6
-	}
 	if opts.CloseTimeout == 0 {
 		opts.CloseTimeout = defaultCloseTimeout
 	}
+	return nil
 }
 
-// -------------------- Sharding Utilities --------------------
+func validateOptions(opts *Options) error {
+	if opts.MaxEntries <= 0 {
+		return errors.New("max entries must be positive")
+	}
+	if opts.MaxMemoryMB <= 0 {
+		return errors.New("max memory must be positive")
+	}
+	if opts.ShardCount <= 0 || (opts.ShardCount&(opts.ShardCount-1)) != 0 {
+		return errors.New("shard count must be power of 2")
+	}
+	return nil
+}
 
+// getShard returns the shard for a given key
 func (kv *KVStore) getShard(key string) *Shard {
 	hash := crc32.ChecksumIEEE([]byte(key))
 	return kv.shards[hash&kv.shardMask]
 }
 
-// -------------------- WAL Management --------------------
-
+// initWAL initializes the Write-Ahead Log
 func (kv *KVStore) initWAL() error {
-	flag := os.O_CREATE | os.O_RDWR
-	if kv.opts.ReadOnly {
-		flag = os.O_RDONLY
+	walPath := filepath.Join(kv.opts.DataDir, "store.wal")
+
+	file, err := os.OpenFile(walPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open WAL: %w", err)
 	}
 
-	file, err := os.OpenFile(kv.opts.WALPath, flag, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open WAL file: %w", err)
-	}
 	kv.walFile = file
-
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("failed to stat WAL file: %w", err)
-	}
-
-	size := info.Size()
-	if size == 0 {
-		size = defaultWALSize
-		if !kv.opts.ReadOnly {
-			if err = file.Truncate(size); err != nil {
-				return fmt.Errorf("failed to truncate WAL file: %w", err)
-			}
-		}
-	}
-
-	prot := syscall.PROT_READ
-	if !kv.opts.ReadOnly {
-		prot |= syscall.PROT_WRITE
-	}
-
-	mmap, err := syscall.Mmap(int(file.Fd()), 0, int(size), prot, syscall.MAP_SHARED)
-	if err != nil {
-		return fmt.Errorf("failed to mmap WAL file: %w", err)
-	}
-
-	kv.walMmap = mmap
-	kv.walSize = size
-	kv.walOffset = 0
-
+	kv.walWriter = bufio.NewWriter(file)
 	return nil
 }
 
-func (kv *KVStore) expandWAL(minSize int) error {
-	if kv.opts.ReadOnly {
-		return errors.New("cannot expand WAL in read-only mode")
-	}
-
-	newSize := kv.walSize*2 + int64(minSize)
-
-	// Unmap current mapping
-	if err := syscall.Munmap(kv.walMmap); err != nil {
-		return fmt.Errorf("failed to unmap WAL: %w", err)
-	}
-
-	// Expand file
-	if err := kv.walFile.Truncate(newSize); err != nil {
-		return fmt.Errorf("failed to expand WAL file: %w", err)
-	}
-
-	// Create new mapping
-	mmap, err := syscall.Mmap(int(kv.walFile.Fd()), 0, int(newSize),
-		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-	if err != nil {
-		return fmt.Errorf("failed to remap expanded WAL: %w", err)
-	}
-
-	kv.walMmap = mmap
-	kv.walSize = newSize
-	return nil
-}
-
-// -------------------- In-Memory Operations --------------------
-
-func (kv *KVStore) insertInMemory(shard *Shard, key string, value []byte, expireAt time.Time) {
-	size := int64(len(key) + len(value) + int(unsafe.Sizeof(valueWithTTL{})))
-	version := atomic.AddInt64(&kv.globalVersion, 1)
-
-	if elem, ok := shard.data[key]; ok {
-		// Update existing
-		oldVal := elem.Value.(valueWithTTL)
-		elem.Value = valueWithTTL{
-			Key:      key,
-			Value:    append([]byte(nil), value...), // defensive copy
-			ExpireAt: expireAt,
-			Size:     size,
-			Version:  version,
-		}
-		shard.lruList.MoveToFront(elem)
-		kv.updateStats(func(s *Stats) { s.MemoryUsage += size - oldVal.Size })
-		return
-	}
-
-	// Check limits before insertion
-	if kv.opts.MaxEntries > 0 && kv.getTotalEntries() >= int64(kv.opts.MaxEntries) {
-		kv.evictLRU(shard)
-	}
-
-	if kv.opts.MaxMemoryBytes > 0 {
-		for kv.getMemoryUsage()+size > kv.opts.MaxMemoryBytes && shard.lruList.Len() > 0 {
-			kv.evictLRU(shard)
-		}
-	}
-
-	// Insert new element
-	val := valueWithTTL{
-		Key:      key,
-		Value:    append([]byte(nil), value...), // defensive copy
-		ExpireAt: expireAt,
-		Size:     size,
-		Version:  version,
-	}
-	elem := shard.lruList.PushFront(val)
-	shard.data[key] = elem
-
-	kv.updateStats(func(s *Stats) {
-		s.Entries++
-		s.MemoryUsage += size
-	})
-}
-
-func (kv *KVStore) deleteInMemory(shard *Shard, key string) bool {
-	elem, ok := shard.data[key]
-	if !ok {
-		return false
-	}
-
-	val := elem.Value.(valueWithTTL)
-	shard.lruList.Remove(elem)
-	delete(shard.data, key)
-
-	kv.updateStats(func(s *Stats) {
-		s.Entries--
-		s.MemoryUsage -= val.Size
-	})
-
-	return true
-}
-
-func (kv *KVStore) evictLRU(shard *Shard) {
-	back := shard.lruList.Back()
-	if back == nil {
-		return
-	}
-
-	val := back.Value.(valueWithTTL)
-	shard.lruList.Remove(back)
-	delete(shard.data, val.Key)
-
-	atomic.AddInt64(&kv.evictions, 1)
-	kv.updateStats(func(s *Stats) {
-		s.Entries--
-		s.Evictions++
-		s.MemoryUsage -= val.Size
-	})
-
-	if !kv.opts.ReadOnly {
-		kv.enqueueLog(walEntry{Op: opDelete, Key: []byte(val.Key)})
-	}
-}
-
-func (kv *KVStore) enqueueLog(e walEntry) {
-	if kv.isClosed() {
-		return
-	}
-
-	select {
-	case kv.logChan <- e:
-	case <-kv.ctx.Done():
-	default:
-		// Use worker pool for non-blocking fallback
-		select {
-		case kv.workerPool <- struct{}{}:
-			go func() {
-				defer func() { <-kv.workerPool }()
-				select {
-				case kv.logChan <- e:
-				case <-kv.ctx.Done():
-				}
-			}()
-		default:
-			// Drop if worker pool is full
-		}
-	}
-}
-
-// -------------------- Async WAL Writer --------------------
-
-func (kv *KVStore) asyncLogWriter() {
+// walWriter handles background WAL writing
+func (kv *KVStore) writeWal() {
 	defer kv.wg.Done()
 
-	batch := make([]walEntry, 0, kv.opts.BatchSize)
 	ticker := time.NewTicker(kv.opts.FlushInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case e := <-kv.logChan:
-			batch = append(batch, e)
-			if len(batch) >= kv.opts.BatchSize {
-				if err := kv.flushBatch(batch); err != nil {
-					// Log error but continue - could use proper logging here
-					fmt.Printf("WAL flush error: %v\n", err)
-				}
-				batch = batch[:0]
+		case entry := <-kv.logChan:
+			if err := kv.writeWALEntry(entry); err != nil {
+				// In production, you'd want proper logging here
+				fmt.Printf("WAL write error: %v\n", err)
 			}
 
 		case <-ticker.C:
-			if len(batch) > 0 {
-				if err := kv.flushBatch(batch); err != nil {
-					fmt.Printf("WAL flush error: %v\n", err)
-				}
-				batch = batch[:0]
-			}
+			kv.flushWAL()
 
 		case <-kv.ctx.Done():
-			if len(batch) > 0 {
-				kv.flushBatch(batch)
+			// Drain remaining entries
+			for {
+				select {
+				case entry := <-kv.logChan:
+					kv.writeWALEntry(entry)
+				default:
+					kv.flushWAL()
+					return
+				}
 			}
-			return
 		}
 	}
 }
 
-func (kv *KVStore) flushBatch(batch []walEntry) error {
-	if len(batch) == 0 {
-		return nil
-	}
-
-	start := time.Now()
-	defer func() {
-		latency := time.Since(start)
-		atomic.StoreInt64(&kv.lastFlushLatency, latency.Nanoseconds())
-		atomic.AddInt64(&kv.flushLatencySum, latency.Nanoseconds())
-		atomic.AddInt64(&kv.flushCount, 1)
-	}()
-
+func (kv *KVStore) writeWALEntry(entry WALEntry) error {
 	kv.walMutex.Lock()
 	defer kv.walMutex.Unlock()
 
-	for _, e := range batch {
-		entryBytes := kv.encodeEntry(e)
-
-		// Check if we need to expand WAL
-		if kv.walOffset+int64(len(entryBytes)) > kv.walSize {
-			if err := kv.expandWAL(len(entryBytes)); err != nil {
-				return fmt.Errorf("failed to expand WAL: %w", err)
-			}
-		}
-
-		copy(kv.walMmap[kv.walOffset:], entryBytes)
-		kv.walOffset += int64(len(entryBytes))
+	data, err := kv.encodeWALEntry(entry)
+	if err != nil {
+		return err
 	}
 
-	// Sync based on durability setting
-	var syncErr error
-	switch kv.opts.Durability {
-	case DurabilityPerWrite:
-		syncErr = kv.syncWAL()
-	case DurabilityEveryFlush:
-		syncErr = kv.syncWAL()
+	n, err := kv.walWriter.Write(data)
+	if err != nil {
+		return err
 	}
 
-	kv.updateStats(func(s *Stats) {
-		s.WALSize = kv.walOffset
-		s.LastFlush = time.Now()
-		s.WALFlushCount++
-		if flushCount := atomic.LoadInt64(&kv.flushCount); flushCount > 0 {
-			s.WALFlushLatency = time.Duration(atomic.LoadInt64(&kv.flushLatencySum) / flushCount)
-		}
-	})
-
-	return syncErr
-}
-
-func (kv *KVStore) syncWAL() error {
-	if len(kv.walMmap) == 0 {
-		return nil
-	}
-
-	switch runtime.GOOS {
-	case "linux", "darwin", "freebsd", "openbsd", "netbsd":
-		addr := uintptr(unsafe.Pointer(&kv.walMmap[0]))
-		length := uintptr(len(kv.walMmap))
-		_, _, errno := syscall.Syscall(syscall.SYS_MSYNC, addr, length, syscall.MS_SYNC)
-		if errno != 0 {
-			return kv.walFile.Sync()
-		}
-	default:
-		return kv.walFile.Sync()
-	}
-
+	atomic.AddInt64(&kv.walSize, int64(n))
 	return nil
 }
 
-// -------------------- TTL Cleaner --------------------
+func (kv *KVStore) flushWAL() {
+	kv.walMutex.Lock()
+	defer kv.walMutex.Unlock()
 
-func (kv *KVStore) ttlCleaner() {
+	if kv.walWriter != nil {
+		kv.walWriter.Flush()
+		kv.walFile.Sync()
+	}
+}
+
+// cleaner handles TTL cleanup
+func (kv *KVStore) cleaner() {
 	defer kv.wg.Done()
 
 	ticker := time.NewTicker(kv.opts.CleanInterval)
@@ -672,25 +312,22 @@ func (kv *KVStore) ttlCleaner() {
 	for {
 		select {
 		case <-ticker.C:
-			kv.cleanExpiredKeys()
+			kv.cleanExpired()
 		case <-kv.ctx.Done():
 			return
 		}
 	}
 }
 
-func (kv *KVStore) cleanExpiredKeys() {
+func (kv *KVStore) cleanExpired() {
 	now := time.Now()
-	startTime := now
 
 	for _, shard := range kv.shards {
-		expiredPtr := stringSlicePool.Get().(*[]string)
-		expired := (*expiredPtr)[:0]
+		var expired []string
 
 		shard.mu.RLock()
-		for key, elem := range shard.data {
-			val := elem.Value.(valueWithTTL)
-			if !val.ExpireAt.IsZero() && now.After(val.ExpireAt) {
+		for key, entry := range shard.data {
+			if !entry.ExpireAt.IsZero() && now.After(entry.ExpireAt) {
 				expired = append(expired, key)
 			}
 		}
@@ -699,427 +336,561 @@ func (kv *KVStore) cleanExpiredKeys() {
 		if len(expired) > 0 {
 			shard.mu.Lock()
 			for _, key := range expired {
-				if elem, ok := shard.data[key]; ok {
-					val := elem.Value.(valueWithTTL)
-					if !val.ExpireAt.IsZero() && now.After(val.ExpireAt) {
-						kv.deleteInMemory(shard, key)
+				if entry, exists := shard.data[key]; exists {
+					if !entry.ExpireAt.IsZero() && now.After(entry.ExpireAt) {
+						kv.deleteFromShard(shard, key, entry)
 						if !kv.opts.ReadOnly {
-							select {
-							case kv.cleanupChan <- key:
-							default:
-								// If cleanup channel is full, enqueue directly
-								kv.enqueueLog(walEntry{Op: opDelete, Key: []byte(key)})
-							}
+							kv.logDelete(key)
 						}
 					}
 				}
 			}
 			shard.mu.Unlock()
-
-			atomic.AddInt64(&kv.ttlCleanups, int64(len(expired)))
-		}
-
-		stringSlicePool.Put(&expired)
-	}
-
-	// Update expiration rate
-	elapsed := time.Since(startTime)
-	if elapsed > 0 {
-		cleanupCount := atomic.LoadInt64(&kv.ttlCleanups)
-		rate := float64(cleanupCount) / elapsed.Seconds()
-		kv.updateStats(func(s *Stats) {
-			s.TTLCleanups = cleanupCount
-			s.ExpiredKeysPerSec = rate
-		})
-	}
-}
-
-func (kv *KVStore) asyncCleanupWorker() {
-	defer kv.wg.Done()
-
-	for {
-		select {
-		case key := <-kv.cleanupChan:
-			if !kv.opts.ReadOnly {
-				kv.enqueueLog(walEntry{Op: opDelete, Key: []byte(key)})
-			}
-		case <-kv.ctx.Done():
-			return
 		}
 	}
 }
 
-// -------------------- Snapshot and Recovery --------------------
+// LRU management for shard
+func (kv *KVStore) moveToFront(shard *Shard, entry *Entry) {
+	if shard.lruHead == entry {
+		return
+	}
 
-func (kv *KVStore) Snapshot() error {
-	if kv.isClosed() || kv.opts.ReadOnly {
+	// Remove from current position
+	if prev := shard.prev[entry]; prev != nil {
+		shard.next[prev] = shard.next[entry]
+	}
+	if next := shard.next[entry]; next != nil {
+		shard.prev[next] = shard.prev[entry]
+	} else {
+		shard.lruTail = shard.prev[entry]
+	}
+
+	// Add to front
+	shard.prev[entry] = nil
+	shard.next[entry] = shard.lruHead
+	if shard.lruHead != nil {
+		shard.prev[shard.lruHead] = entry
+	}
+	shard.lruHead = entry
+	if shard.lruTail == nil {
+		shard.lruTail = entry
+	}
+}
+
+func (kv *KVStore) evictLRU(shard *Shard) {
+	if shard.lruTail == nil {
+		return
+	}
+
+	entry := shard.lruTail
+	kv.deleteFromShard(shard, entry.Key, entry)
+
+	if !kv.opts.ReadOnly {
+		kv.logDelete(entry.Key)
+	}
+
+	atomic.AddInt64(&kv.evictions, 1)
+}
+
+func (kv *KVStore) deleteFromShard(shard *Shard, key string, entry *Entry) {
+	// Remove from map
+	delete(shard.data, key)
+
+	// Remove from LRU
+	if prev := shard.prev[entry]; prev != nil {
+		shard.next[prev] = shard.next[entry]
+	} else {
+		shard.lruHead = shard.next[entry]
+	}
+	if next := shard.next[entry]; next != nil {
+		shard.prev[next] = shard.prev[entry]
+	} else {
+		shard.lruTail = shard.prev[entry]
+	}
+
+	delete(shard.next, entry)
+	delete(shard.prev, entry)
+
+	// Update counters
+	atomic.AddInt64(&kv.entries, -1)
+	atomic.AddInt64(&kv.memoryUsage, -entry.Size)
+}
+
+// Public API
+
+func (kv *KVStore) Set(key string, value []byte, ttl time.Duration) error {
+	if kv.isClosed() {
 		return ErrStoreClosed
 	}
 
-	tempPath := kv.opts.SnapshotPath + ".tmp"
-	f, err := os.Create(tempPath)
-	if err != nil {
-		return fmt.Errorf("failed to create snapshot file: %w", err)
+	shard := kv.getShard(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	var expireAt time.Time
+	if ttl > 0 {
+		expireAt = time.Now().Add(ttl)
 	}
-	defer f.Close()
 
-	var writer io.Writer = bufio.NewWriter(f)
+	size := int64(len(key) + len(value) + 64) // rough estimate
+	version := atomic.AddInt64(&kv.version, 1)
 
-	// Add compression if enabled
-	if kv.opts.EnableCompression && kv.opts.CompressionType == CompressionGzip {
-		gzWriter, gzErr := gzip.NewWriterLevel(writer, kv.opts.CompressionLevel)
-		if gzErr != nil {
-			return fmt.Errorf("failed to create gzip writer: %w", gzErr)
+	// Check limits and evict if necessary
+	for atomic.LoadInt64(&kv.entries) >= int64(kv.opts.MaxEntries) {
+		kv.evictLRU(shard)
+	}
+
+	maxMemory := int64(kv.opts.MaxMemoryMB) * 1024 * 1024
+	for atomic.LoadInt64(&kv.memoryUsage)+size > maxMemory {
+		kv.evictLRU(shard)
+	}
+
+	// Create or update entry
+	entry := &Entry{
+		Key:      key,
+		Value:    append([]byte(nil), value...), // defensive copy
+		ExpireAt: expireAt,
+		Size:     size,
+		Version:  version,
+	}
+
+	// Remove old entry if exists
+	if oldEntry, exists := shard.data[key]; exists {
+		kv.deleteFromShard(shard, key, oldEntry)
+	}
+
+	// Add new entry
+	shard.data[key] = entry
+	kv.moveToFront(shard, entry)
+
+	atomic.AddInt64(&kv.entries, 1)
+	atomic.AddInt64(&kv.memoryUsage, size)
+
+	// Log to WAL
+	if !kv.opts.ReadOnly {
+		kv.logSet(key, value, expireAt, version)
+	}
+
+	return nil
+}
+
+func (kv *KVStore) Get(key string) ([]byte, error) {
+	if kv.isClosed() {
+		return nil, ErrStoreClosed
+	}
+
+	shard := kv.getShard(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	entry, exists := shard.data[key]
+	if !exists {
+		atomic.AddInt64(&kv.misses, 1)
+		return nil, ErrKeyNotFound
+	}
+
+	// Check expiration
+	if !entry.ExpireAt.IsZero() && time.Now().After(entry.ExpireAt) {
+		kv.deleteFromShard(shard, key, entry)
+		if !kv.opts.ReadOnly {
+			kv.logDelete(key)
 		}
-		defer gzWriter.Close()
-		writer = gzWriter
+		atomic.AddInt64(&kv.misses, 1)
+		return nil, ErrKeyExpired
 	}
 
-	// Write magic number and version
-	if err = binary.Write(writer, binary.LittleEndian, magicNumber); err != nil {
-		return fmt.Errorf("failed to write magic number: %w", err)
-	}
-	if err = binary.Write(writer, binary.LittleEndian, version); err != nil {
-		return fmt.Errorf("failed to write version: %w", err)
+	// Move to front (LRU)
+	kv.moveToFront(shard, entry)
+	atomic.AddInt64(&kv.hits, 1)
+
+	// Return defensive copy
+	return append([]byte(nil), entry.Value...), nil
+}
+
+func (kv *KVStore) Delete(key string) error {
+	if kv.isClosed() {
+		return ErrStoreClosed
 	}
 
-	// Count total entries
-	totalEntries := kv.getTotalEntries()
-	if err = binary.Write(writer, binary.LittleEndian, uint32(totalEntries)); err != nil {
-		return fmt.Errorf("failed to write entry count: %w", err)
+	shard := kv.getShard(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	entry, exists := shard.data[key]
+	if !exists {
+		return ErrKeyNotFound
 	}
 
-	// Write entries from all shards
+	kv.deleteFromShard(shard, key, entry)
+
+	if !kv.opts.ReadOnly {
+		kv.logDelete(key)
+	}
+
+	return nil
+}
+
+func (kv *KVStore) Exists(key string) bool {
+	if kv.isClosed() {
+		return false
+	}
+
+	shard := kv.getShard(key)
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+
+	entry, exists := shard.data[key]
+	if !exists {
+		return false
+	}
+
+	// Check expiration
+	if !entry.ExpireAt.IsZero() && time.Now().After(entry.ExpireAt) {
+		return false
+	}
+
+	return true
+}
+
+func (kv *KVStore) Keys() []string {
+	if kv.isClosed() {
+		return nil
+	}
+
+	var keys []string
+	now := time.Now()
+
 	for _, shard := range kv.shards {
 		shard.mu.RLock()
-		for key, elem := range shard.data {
-			val := elem.Value.(valueWithTTL)
-			entry := walEntry{
-				Op:       opCreate,
-				ExpireAt: val.ExpireAt.UnixNano(),
-				Key:      []byte(key),
-				Value:    val.Value,
-				Version:  val.Version,
-			}
-			entryBytes := kv.encodeEntry(entry)
-			if _, err = writer.Write(entryBytes); err != nil {
-				shard.mu.RUnlock()
-				return fmt.Errorf("failed to write entry: %w", err)
+		for key, entry := range shard.data {
+			if entry.ExpireAt.IsZero() || now.Before(entry.ExpireAt) {
+				keys = append(keys, key)
 			}
 		}
 		shard.mu.RUnlock()
 	}
 
-	// Flush and sync
-	if bufWriter, ok := writer.(*bufio.Writer); ok {
-		if err = bufWriter.Flush(); err != nil {
-			return fmt.Errorf("failed to flush snapshot: %w", err)
-		}
-	}
-	if err = f.Sync(); err != nil {
-		return fmt.Errorf("failed to sync snapshot: %w", err)
+	sort.Strings(keys)
+	return keys
+}
+
+func (kv *KVStore) Size() int {
+	return int(atomic.LoadInt64(&kv.entries))
+}
+
+func (kv *KVStore) GetStats() Stats {
+	hits := atomic.LoadInt64(&kv.hits)
+	misses := atomic.LoadInt64(&kv.misses)
+
+	var hitRatio float64
+	if hits+misses > 0 {
+		hitRatio = float64(hits) / float64(hits+misses)
 	}
 
-	// Get snapshot size
-	info, _ := f.Stat()
-	snapshotSize := info.Size()
+	return Stats{
+		Entries:     atomic.LoadInt64(&kv.entries),
+		Hits:        hits,
+		Misses:      misses,
+		Evictions:   atomic.LoadInt64(&kv.evictions),
+		MemoryUsage: atomic.LoadInt64(&kv.memoryUsage),
+		WALSize:     atomic.LoadInt64(&kv.walSize),
+		HitRatio:    hitRatio,
+	}
+}
+
+// Snapshot creates a point-in-time snapshot
+func (kv *KVStore) Snapshot() error {
+	if kv.isClosed() || kv.opts.ReadOnly {
+		return ErrStoreClosed
+	}
+
+	snapshotPath := filepath.Join(kv.opts.DataDir, "snapshot.json")
+	tempPath := snapshotPath + ".tmp"
+
+	file, err := os.Create(tempPath)
+	if err != nil {
+		return fmt.Errorf("failed to create snapshot: %w", err)
+	}
+	defer file.Close()
+
+	var writer io.Writer = file
+	if kv.opts.EnableCompression {
+		gzWriter := gzip.NewWriter(file)
+		defer gzWriter.Close()
+		writer = gzWriter
+	}
+
+	encoder := json.NewEncoder(writer)
+
+	// Write header
+	header := map[string]interface{}{
+		"magic":   magicNumber,
+		"version": version,
+		"created": time.Now(),
+	}
+	if err := encoder.Encode(header); err != nil {
+		return err
+	}
+
+	// Write all entries
+	now := time.Now()
+	for _, shard := range kv.shards {
+		shard.mu.RLock()
+		for _, entry := range shard.data {
+			if entry.ExpireAt.IsZero() || now.Before(entry.ExpireAt) {
+				if err := encoder.Encode(entry); err != nil {
+					shard.mu.RUnlock()
+					return err
+				}
+			}
+		}
+		shard.mu.RUnlock()
+	}
+
+	file.Sync()
 
 	// Atomic replace
-	if err = os.Rename(tempPath, kv.opts.SnapshotPath); err != nil {
+	if err := os.Rename(tempPath, snapshotPath); err != nil {
 		return fmt.Errorf("failed to rename snapshot: %w", err)
 	}
 
 	// Reset WAL
-	kv.walMutex.Lock()
-	defer kv.walMutex.Unlock()
-
-	if err = syscall.Munmap(kv.walMmap); err != nil {
-		return fmt.Errorf("failed to unmap WAL: %w", err)
-	}
-
-	if err = kv.walFile.Truncate(defaultWALSize); err != nil {
-		return fmt.Errorf("failed to truncate WAL: %w", err)
-	}
-
-	mmap, err := syscall.Mmap(int(kv.walFile.Fd()), 0, defaultWALSize,
-		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-	if err != nil {
-		return fmt.Errorf("failed to remap WAL: %w", err)
-	}
-
-	kv.walMmap = mmap
-	kv.walSize = defaultWALSize
-	kv.walOffset = 0
-
-	atomic.AddInt64(&kv.compactionCount, 1)
-	kv.updateStats(func(s *Stats) {
-		s.LastSnapshot = time.Now()
-		s.WALSize = 0
-		s.SnapshotSize = snapshotSize
-		s.CompactionCount++
-	})
+	kv.resetWAL()
 
 	return nil
 }
 
-func (kv *KVStore) loadFromSnapshot() error {
-	f, err := os.Open(kv.opts.SnapshotPath)
+func (kv *KVStore) resetWAL() {
+	kv.walMutex.Lock()
+	defer kv.walMutex.Unlock()
+
+	if kv.walFile != nil {
+		kv.walFile.Close()
+	}
+
+	walPath := filepath.Join(kv.opts.DataDir, "store.wal")
+	os.Remove(walPath)
+
+	file, err := os.Create(walPath)
+	if err != nil {
+		return
+	}
+
+	kv.walFile = file
+	kv.walWriter = bufio.NewWriter(file)
+	atomic.StoreInt64(&kv.walSize, 0)
+}
+
+// loadData loads data from snapshot and replays WAL
+func (kv *KVStore) loadData() error {
+	// Load snapshot first
+	if err := kv.loadSnapshot(); err != nil {
+		return err
+	}
+
+	// Replay WAL
+	return kv.replayWAL()
+}
+
+func (kv *KVStore) loadSnapshot() error {
+	snapshotPath := filepath.Join(kv.opts.DataDir, "snapshot.json")
+
+	file, err := os.Open(snapshotPath)
 	if os.IsNotExist(err) {
 		return nil // No snapshot exists
 	}
 	if err != nil {
-		return fmt.Errorf("failed to open snapshot: %w", err)
+		return err
 	}
-	defer f.Close()
+	defer file.Close()
 
-	var reader io.Reader = bufio.NewReader(f)
-
-	// Try to detect compression
+	var reader io.Reader = file
 	if kv.opts.EnableCompression {
-		gzReader, err := gzip.NewReader(reader)
+		gzReader, err := gzip.NewReader(file)
 		if err == nil {
 			defer gzReader.Close()
 			reader = gzReader
 		}
-		// If gzip fails, continue with uncompressed reader
 	}
 
-	// Check magic number
-	var magic, ver, count uint32
-	if err := binary.Read(reader, binary.LittleEndian, &magic); err != nil {
-		return fmt.Errorf("failed to read magic number: %w", err)
-	}
-	if magic != magicNumber {
-		return errors.New("invalid snapshot file")
+	decoder := json.NewDecoder(reader)
+
+	// Read header
+	var header map[string]interface{}
+	if err := decoder.Decode(&header); err != nil {
+		return err
 	}
 
-	if err := binary.Read(reader, binary.LittleEndian, &ver); err != nil {
-		return fmt.Errorf("failed to read version: %w", err)
-	}
-	if ver < 1 || ver > version {
-		return fmt.Errorf("unsupported snapshot version: %d", ver)
-	}
-
-	if err := binary.Read(reader, binary.LittleEndian, &count); err != nil {
-		return fmt.Errorf("failed to read entry count: %w", err)
-	}
-
-	for i := uint32(0); i < count; i++ {
-		entry, err := kv.decodeEntry(reader)
-		if err != nil {
-			return fmt.Errorf("failed to decode entry %d: %w", i, err)
+	// Read entries
+	for decoder.More() {
+		var entry Entry
+		if err := decoder.Decode(&entry); err != nil {
+			return err
 		}
 
-		if entry.Op == opCreate {
-			var expireAt time.Time
-			if entry.ExpireAt > 0 {
-				expireAt = time.Unix(0, entry.ExpireAt)
-			}
+		shard := kv.getShard(entry.Key)
+		shard.mu.Lock()
+		shard.data[entry.Key] = &entry
+		kv.moveToFront(shard, &entry)
+		shard.mu.Unlock()
 
-			shard := kv.getShard(string(entry.Key))
-			shard.mu.Lock()
-			kv.insertInMemory(shard, string(entry.Key), entry.Value, expireAt)
-			shard.mu.Unlock()
-		}
+		atomic.AddInt64(&kv.entries, 1)
+		atomic.AddInt64(&kv.memoryUsage, entry.Size)
 	}
 
 	return nil
 }
 
 func (kv *KVStore) replayWAL() error {
-	// Fixed: Properly scan entire WAL to find actual end offset
-	reader := &mmapReader{data: kv.walMmap}
-	var lastValidOffset int64
+	walPath := filepath.Join(kv.opts.DataDir, "store.wal")
 
-	for reader.offset < len(reader.data) {
-		startOffset := reader.offset
-		entry, err := kv.decodeEntry(reader)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			// If we encounter corruption, stop at last valid entry
-			if err == ErrInvalidEntry {
-				break
-			}
-			return fmt.Errorf("WAL replay failed: %w", err)
-		}
+	file, err := os.Open(walPath)
+	if os.IsNotExist(err) {
+		return nil // No WAL exists
+	}
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 
-		lastValidOffset = int64(reader.offset)
+	decoder := json.NewDecoder(file)
 
-		key := string(entry.Key)
-		var expireAt time.Time
-		if entry.ExpireAt > 0 {
-			expireAt = time.Unix(0, entry.ExpireAt)
-		}
-
-		shard := kv.getShard(key)
-		shard.mu.Lock()
-		switch entry.Op {
-		case opCreate, opUpdate:
-			kv.insertInMemory(shard, key, entry.Value, expireAt)
-		case opDelete:
-			kv.deleteInMemory(shard, key)
-		}
-		shard.mu.Unlock()
-
-		// Prevent infinite loop on corrupted data
-		if reader.offset <= startOffset {
+	for decoder.More() {
+		var entry WALEntry
+		if err := decoder.Decode(&entry); err != nil {
+			// Stop on first error (corruption)
 			break
 		}
+
+		if !kv.validateWALEntry(entry) {
+			continue // Skip corrupted entries
+		}
+
+		shard := kv.getShard(entry.Key)
+		shard.mu.Lock()
+
+		switch entry.Op {
+		case opSet:
+			size := int64(len(entry.Key) + len(entry.Value) + 64)
+			e := &Entry{
+				Key:      entry.Key,
+				Value:    entry.Value,
+				ExpireAt: entry.ExpireAt,
+				Size:     size,
+				Version:  entry.Version,
+			}
+
+			if oldEntry, exists := shard.data[entry.Key]; exists {
+				kv.deleteFromShard(shard, entry.Key, oldEntry)
+			}
+
+			shard.data[entry.Key] = e
+			kv.moveToFront(shard, e)
+			atomic.AddInt64(&kv.entries, 1)
+			atomic.AddInt64(&kv.memoryUsage, size)
+
+		case opDelete:
+			if entry, exists := shard.data[entry.Key]; exists {
+				kv.deleteFromShard(shard, entry.Key, entry)
+			}
+		}
+
+		shard.mu.Unlock()
 	}
 
-	kv.walOffset = lastValidOffset
 	return nil
 }
 
-// -------------------- Statistics and Utilities --------------------
-func (kv *KVStore) updateStats(fn func(*Stats)) {
-	if !kv.opts.EnableMetrics {
-		return
-	}
+// Utility methods
 
-	for i := 0; i < maxStatsUpdateRetries; i++ {
-		old := kv.stats.Load().(*Stats)
-		newStats := *old
-		fn(&newStats)
-		if kv.stats.CompareAndSwap(old, &newStats) {
-			return
-		}
-		if i%10 == 9 {
-			runtime.Gosched() // Yield CPU periodically
-		}
+func (kv *KVStore) logSet(key string, value []byte, expireAt time.Time, version int64) {
+	entry := WALEntry{
+		Op:       opSet,
+		Key:      key,
+		Value:    value,
+		ExpireAt: expireAt,
+		Version:  version,
 	}
-	// Failed to update after max retries - acceptable for non-critical stats
+	entry.CRC = kv.calculateCRC(entry)
+
+	select {
+	case kv.logChan <- entry:
+	default:
+		// Channel full, drop entry (or implement backpressure)
+	}
 }
 
-func (kv *KVStore) getMemoryUsage() int64 {
-	stats := kv.stats.Load().(*Stats)
-	return stats.MemoryUsage
+func (kv *KVStore) logDelete(key string) {
+	entry := WALEntry{
+		Op:      opDelete,
+		Key:     key,
+		Version: atomic.AddInt64(&kv.version, 1),
+	}
+	entry.CRC = kv.calculateCRC(entry)
+
+	select {
+	case kv.logChan <- entry:
+	default:
+		// Channel full, drop entry
+	}
 }
 
-func (kv *KVStore) getTotalEntries() int64 {
-	var total int64
-	for _, shard := range kv.shards {
-		shard.mu.RLock()
-		total += int64(len(shard.data))
-		shard.mu.RUnlock()
-	}
-	return total
+func (kv *KVStore) encodeWALEntry(entry WALEntry) ([]byte, error) {
+	return json.Marshal(entry)
+}
+
+func (kv *KVStore) calculateCRC(entry WALEntry) uint32 {
+	data := fmt.Sprintf("%d%s%s%d", entry.Op, entry.Key, entry.Value, entry.Version)
+	return crc32.ChecksumIEEE([]byte(data))
+}
+
+func (kv *KVStore) validateWALEntry(entry WALEntry) bool {
+	expected := kv.calculateCRC(entry)
+	return entry.CRC == expected
 }
 
 func (kv *KVStore) isClosed() bool {
 	return atomic.LoadInt32(&kv.closed) != 0
 }
 
-func (kv *KVStore) cleanup() error {
-	var lastErr error
-
-	if kv.walMmap != nil {
-		if err := syscall.Munmap(kv.walMmap); err != nil {
-			lastErr = fmt.Errorf("failed to unmap WAL: %w", err)
-		}
+func (kv *KVStore) Close() error {
+	if !atomic.CompareAndSwapInt32(&kv.closed, 0, 1) {
+		return ErrStoreClosed
 	}
 
+	// Signal shutdown
+	kv.cancel()
+
+	// Wait for workers with timeout
+	done := make(chan struct{})
+	go func() {
+		kv.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Normal shutdown
+	case <-time.After(kv.opts.CloseTimeout):
+		return ErrCloseTimeout
+	}
+
+	// Close WAL
 	if kv.walFile != nil {
-		if err := kv.walFile.Close(); err != nil {
-			lastErr = fmt.Errorf("failed to close WAL file: %w", err)
-		}
+		kv.flushWAL()
+		kv.walFile.Close()
 	}
 
-	return lastErr
+	return nil
 }
 
-// -------------------- Encoding/Decoding --------------------
-
-func (kv *KVStore) encodeEntry(e walEntry) []byte {
-	keyLen := uint32(len(e.Key))
-	valLen := uint32(len(e.Value))
-
-	bufPtr := entryPool.Get().(*[]byte)
-	buf := (*bufPtr)[:0] // Reset length but keep capacity
-
-	// Ensure sufficient capacity
-	needed := entryHeaderSize + 8 + len(e.Key) + len(e.Value) // +8 for version
-	if cap(buf) < needed {
-		buf = make([]byte, 0, needed)
-	}
-
-	buf = buf[:needed]
-
-	// Skip CRC32 for now, will calculate at end
-	offset := 4
-
-	buf[offset] = e.Op
-	offset++
-
-	binary.LittleEndian.PutUint64(buf[offset:], uint64(e.ExpireAt))
-	offset += 8
-
-	binary.LittleEndian.PutUint32(buf[offset:], keyLen)
-	offset += 4
-
-	binary.LittleEndian.PutUint32(buf[offset:], valLen)
-	offset += 4
-
-	// Version (new in v2)
-	binary.LittleEndian.PutUint64(buf[offset:], uint64(e.Version))
-	offset += 8
-
-	copy(buf[offset:], e.Key)
-	offset += len(e.Key)
-
-	copy(buf[offset:], e.Value)
-
-	// Calculate and set CRC32
-	crc := crc32.ChecksumIEEE(buf[4:])
-	binary.LittleEndian.PutUint32(buf[0:], crc)
-
-	// Make a copy to return since buf will be reused
-	result := make([]byte, len(buf))
-	copy(result, buf)
-
-	entryPool.Put(&buf)
-	return result
-}
-
-func (kv *KVStore) decodeEntry(r io.Reader) (walEntry, error) {
-	header := make([]byte, entryHeaderSize+8) // +8 for version in v2
-	if _, err := io.ReadFull(r, header); err != nil {
-		return walEntry{}, err
-	}
-
-	crc := binary.LittleEndian.Uint32(header[0:])
-	op := header[4]
-	expireAt := int64(binary.LittleEndian.Uint64(header[5:]))
-	keyLen := binary.LittleEndian.Uint32(header[13:])
-	valLen := binary.LittleEndian.Uint32(header[17:])
-	version := int64(binary.LittleEndian.Uint64(header[21:]))
-
-	// Read key and value
-	data := make([]byte, keyLen+valLen)
-	if _, err := io.ReadFull(r, data); err != nil {
-		return walEntry{}, err
-	}
-
-	// Verify CRC
-	checkData := make([]byte, entryHeaderSize-4+8+keyLen+valLen) // +8 for version
-	copy(checkData, header[4:])
-	copy(checkData[entryHeaderSize-4+8:], data)
-
-	expectedCRC := crc32.ChecksumIEEE(checkData)
-	if crc != expectedCRC {
-		return walEntry{}, ErrInvalidEntry
-	}
-
-	key := data[:keyLen]
-	value := data[keyLen:]
-
-	return walEntry{
-		Op:       op,
-		ExpireAt: expireAt,
-		Key:      key,
-		Value:    value,
-		Version:  version,
-	}, nil
+// Default creates a KV store with sensible defaults
+func Default() (*KVStore, error) {
+	return NewKVStore(Options{
+		DataDir:           "data",
+		MaxEntries:        100000,
+		MaxMemoryMB:       200,
+		EnableCompression: true,
+	})
 }

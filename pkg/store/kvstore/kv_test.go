@@ -1,740 +1,740 @@
 package kvstore
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// Test helper functions
-func createTestStore(t *testing.T, opts Options) (*KVStore, func()) {
-	tempDir, err := os.MkdirTemp("", "kvstore-test-")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+// TestMain handles test setup and cleanup
+func TestMain(m *testing.M) {
+	// Run tests
+	code := m.Run()
+
+	// Cleanup test directories
+	cleanupTestDirs()
+
+	os.Exit(code)
+}
+
+func cleanupTestDirs() {
+	testDirs, _ := filepath.Glob("testdata_*")
+	for _, dir := range testDirs {
+		os.RemoveAll(dir)
+	}
+}
+
+// Test utilities
+func createTestStore(t *testing.T) (*KVStore, func()) {
+	dataDir := fmt.Sprintf("testdata_%d", time.Now().UnixNano())
+
+	opts := Options{
+		DataDir:       dataDir,
+		MaxEntries:    1000,
+		MaxMemoryMB:   10,
+		FlushInterval: 10 * time.Millisecond,
+		CleanInterval: 100 * time.Millisecond,
+		ShardCount:    4,
 	}
 
-	opts.WALPath = filepath.Join(tempDir, "test.wal")
-	opts.SnapshotPath = filepath.Join(tempDir, "test.snapshot")
-	opts.EnableMetrics = true
-
-	store, err := NewKVStore(opts)
+	kv, err := NewKVStore(opts)
 	if err != nil {
-		os.RemoveAll(tempDir)
-		t.Fatalf("Failed to create store: %v", err)
+		t.Fatalf("Failed to create test store: %v", err)
 	}
 
 	cleanup := func() {
-		store.Close()
-		os.RemoveAll(tempDir)
+		kv.Close()
+		os.RemoveAll(dataDir)
 	}
 
-	return store, cleanup
+	return kv, cleanup
 }
 
-func defaultTestOptions() Options {
-	return Options{
-		LogBufferSize:      100,
-		BatchSize:          10,
-		FlushInterval:      10 * time.Millisecond,
-		CleanInterval:      100 * time.Millisecond,
-		ShardCount:         4,
-		Durability:         DurabilityEveryFlush,
-		EnableMetrics:      true,
-		EnableTransactions: true,
-		CloseTimeout:       5 * time.Second,
+// Basic functionality tests
+
+func TestNewKVStore(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    Options
+		wantErr bool
+	}{
+		{
+			name: "valid options",
+			opts: Options{
+				DataDir:     "testdata",
+				MaxEntries:  1000,
+				MaxMemoryMB: 10,
+				ShardCount:  4,
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid shard count",
+			opts: Options{
+				DataDir:     "testdata",
+				MaxEntries:  1000,
+				MaxMemoryMB: 10,
+				ShardCount:  3, // Not power of 2
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero max entries",
+			opts: Options{
+				DataDir:     "testdata",
+				MaxEntries:  0,
+				MaxMemoryMB: 10,
+				ShardCount:  4,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kv, err := NewKVStore(tt.opts)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NewKVStore() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if kv != nil {
+				kv.Close()
+				os.RemoveAll(tt.opts.DataDir)
+			}
+		})
 	}
 }
 
-// Test basic CRUD operations
-func TestBasicCRUD(t *testing.T) {
-	store, cleanup := createTestStore(t, defaultTestOptions())
+func TestBasicOperations(t *testing.T) {
+	kv, cleanup := createTestStore(t)
 	defer cleanup()
 
-	// Test Create
-	err := store.Create("key1", []byte("value1"), 0)
+	// Test Set and Get
+	key := "test_key"
+	value := []byte("test_value")
+
+	err := kv.Set(key, value, 0)
 	if err != nil {
-		t.Errorf("Failed to create key: %v", err)
+		t.Fatalf("Set failed: %v", err)
 	}
 
-	// Test duplicate create should fail
-	err = store.Create("key1", []byte("value2"), 0)
-	if err != ErrKeyExists {
-		t.Errorf("Expected ErrKeyExists, got %v", err)
-	}
-
-	// Test Read
-	value, err := store.Read("key1")
+	retrieved, err := kv.Get(key)
 	if err != nil {
-		t.Errorf("Failed to read key: %v", err)
-	}
-	if string(value) != "value1" {
-		t.Errorf("Expected 'value1', got '%s'", string(value))
+		t.Fatalf("Get failed: %v", err)
 	}
 
-	// Test Read non-existent key
-	_, err = store.Read("nonexistent")
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected ErrKeyNotFound, got %v", err)
+	if !bytes.Equal(value, retrieved) {
+		t.Errorf("Expected %s, got %s", value, retrieved)
 	}
 
-	// Test Update
-	err = store.Update("key1", []byte("updated_value"), 0)
-	if err != nil {
-		t.Errorf("Failed to update key: %v", err)
-	}
-
-	value, err = store.Read("key1")
-	if err != nil {
-		t.Errorf("Failed to read updated key: %v", err)
-	}
-	if string(value) != "updated_value" {
-		t.Errorf("Expected 'updated_value', got '%s'", string(value))
-	}
-
-	// Test Update non-existent key
-	err = store.Update("nonexistent", []byte("value"), 0)
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected ErrKeyNotFound, got %v", err)
+	// Test Exists
+	if !kv.Exists(key) {
+		t.Error("Key should exist")
 	}
 
 	// Test Delete
-	err = store.Delete("key1")
+	err = kv.Delete(key)
 	if err != nil {
-		t.Errorf("Failed to delete key: %v", err)
+		t.Fatalf("Delete failed: %v", err)
 	}
 
-	_, err = store.Read("key1")
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected ErrKeyNotFound after delete, got %v", err)
-	}
-
-	// Test Delete non-existent key
-	err = store.Delete("nonexistent")
+	// Test Get after delete
+	_, err = kv.Get(key)
 	if err != ErrKeyNotFound {
 		t.Errorf("Expected ErrKeyNotFound, got %v", err)
 	}
+
+	// Test Exists after delete
+	if kv.Exists(key) {
+		t.Error("Key should not exist after delete")
+	}
 }
 
-// Test TTL functionality
 func TestTTL(t *testing.T) {
-	store, cleanup := createTestStore(t, defaultTestOptions())
+	kv, cleanup := createTestStore(t)
 	defer cleanup()
 
-	// Create key with 1 second TTL
-	err := store.Create("ttl_key", []byte("ttl_value"), 1)
+	key := "ttl_key"
+	value := []byte("ttl_value")
+	ttl := 100 * time.Millisecond
+
+	// Set with TTL
+	err := kv.Set(key, value, ttl)
 	if err != nil {
-		t.Errorf("Failed to create TTL key: %v", err)
+		t.Fatalf("Set with TTL failed: %v", err)
 	}
 
 	// Should exist immediately
-	value, err := store.Read("ttl_key")
-	if err != nil {
-		t.Errorf("Failed to read TTL key: %v", err)
-	}
-	if string(value) != "ttl_value" {
-		t.Errorf("Expected 'ttl_value', got '%s'", string(value))
-	}
-
-	// Check TTL
-	ttl, err := store.TTL("ttl_key")
-	if err != nil {
-		t.Errorf("Failed to get TTL: %v", err)
-	}
-	if ttl <= 0 || ttl > time.Second {
-		t.Errorf("Invalid TTL: %v", ttl)
+	if !kv.Exists(key) {
+		t.Error("Key should exist immediately after set")
 	}
 
 	// Wait for expiration
-	time.Sleep(1100 * time.Millisecond)
+	time.Sleep(ttl + 50*time.Millisecond)
 
-	// Should be expired
-	_, err = store.Read("ttl_key")
+	// Should not exist after TTL
+	if kv.Exists(key) {
+		t.Error("Key should not exist after TTL")
+	}
+
+	// Get should return expired error
+	_, err = kv.Get(key)
 	if err != ErrKeyExpired {
 		t.Errorf("Expected ErrKeyExpired, got %v", err)
 	}
-
-	// Test SetTTL
-	store.Create("set_ttl_key", []byte("value"), 0)
-	err = store.SetTTL("set_ttl_key", 1)
-	if err != nil {
-		t.Errorf("Failed to set TTL: %v", err)
-	}
-
-	time.Sleep(1100 * time.Millisecond)
-	_, err = store.Read("set_ttl_key")
-	if err != ErrKeyExpired {
-		t.Errorf("Expected ErrKeyExpired after SetTTL, got %v", err)
-	}
 }
 
-// Test LRU eviction
-func TestLRUEviction(t *testing.T) {
-	opts := defaultTestOptions()
-	opts.MaxEntries = 3
-	store, cleanup := createTestStore(t, opts)
-	defer cleanup()
-
-	// Fill to capacity
-	store.Create("key1", []byte("value1"), 0)
-	store.Create("key2", []byte("value2"), 0)
-	store.Create("key3", []byte("value3"), 0)
-
-	// Access key1 to make it most recently used
-	store.Read("key1")
-
-	// Add key4, should evict key2 (least recently used)
-	store.Create("key4", []byte("value4"), 0)
-
-	// key2 should be evicted
-	_, err := store.Read("key2")
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected key2 to be evicted, got %v", err)
-	}
-
-	// Other keys should still exist
-	_, err = store.Read("key1")
-	if err != nil {
-		t.Errorf("key1 should still exist: %v", err)
-	}
-	_, err = store.Read("key3")
-	if err != nil {
-		t.Errorf("key3 should still exist: %v", err)
-	}
-	_, err = store.Read("key4")
-	if err != nil {
-		t.Errorf("key4 should exist: %v", err)
-	}
-}
-
-// Test memory limit eviction
-func TestMemoryLimitEviction(t *testing.T) {
-	opts := defaultTestOptions()
-	opts.MaxMemoryBytes = 1024 // 1KB limit
-	store, cleanup := createTestStore(t, opts)
-	defer cleanup()
-
-	// Create large values that will exceed memory limit
-	largeValue := make([]byte, 500)
-	for i := range largeValue {
-		largeValue[i] = byte('a')
-	}
-
-	store.Create("key1", largeValue, 0)
-	store.Create("key2", largeValue, 0)
-
-	// This should trigger eviction
-	store.Create("key3", largeValue, 0)
-
-	// At least one key should be evicted
-	stats := store.GetStats()
-	if stats.Evictions == 0 {
-		t.Error("Expected some evictions due to memory limit")
-	}
-}
-
-// Test concurrent operations
 func TestConcurrentOperations(t *testing.T) {
-	store, cleanup := createTestStore(t, defaultTestOptions())
+	kv, cleanup := createTestStore(t)
 	defer cleanup()
 
-	const numGoroutines = 10
-	const operationsPerGoroutine = 100
-
+	numWorkers := 10
+	numOps := 100
 	var wg sync.WaitGroup
-	wg.Add(numGoroutines)
 
 	// Concurrent writes
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
+	wg.Add(numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		go func(workerID int) {
 			defer wg.Done()
-			for j := 0; j < operationsPerGoroutine; j++ {
-				key := fmt.Sprintf("key-%d-%d", id, j)
-				value := fmt.Sprintf("value-%d-%d", id, j)
-				store.Create(key, []byte(value), 0)
+			for j := 0; j < numOps; j++ {
+				key := fmt.Sprintf("key_%d_%d", workerID, j)
+				value := []byte(fmt.Sprintf("value_%d_%d", workerID, j))
+				if err := kv.Set(key, value, 0); err != nil {
+					t.Errorf("Set failed: %v", err)
+				}
 			}
 		}(i)
 	}
-
 	wg.Wait()
 
-	// Verify data integrity
-	for i := 0; i < numGoroutines; i++ {
-		for j := 0; j < operationsPerGoroutine; j++ {
-			key := fmt.Sprintf("key-%d-%d", i, j)
-			expectedValue := fmt.Sprintf("value-%d-%d", i, j)
+	// Verify all keys exist
+	expectedKeys := numWorkers * numOps
+	if kv.Size() != expectedKeys {
+		t.Errorf("Expected %d keys, got %d", expectedKeys, kv.Size())
+	}
 
-			value, err := store.Read(key)
-			if err != nil {
-				t.Errorf("Failed to read %s: %v", key, err)
-				continue
+	// Concurrent reads
+	wg.Add(numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < numOps; j++ {
+				key := fmt.Sprintf("key_%d_%d", workerID, j)
+				expectedValue := []byte(fmt.Sprintf("value_%d_%d", workerID, j))
+
+				value, err := kv.Get(key)
+				if err != nil {
+					t.Errorf("Get failed for key %s: %v", key, err)
+					continue
+				}
+
+				if !bytes.Equal(value, expectedValue) {
+					t.Errorf("Value mismatch for key %s", key)
+				}
 			}
-			if string(value) != expectedValue {
-				t.Errorf("Key %s: expected %s, got %s", key, expectedValue, string(value))
-			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestLRUEviction(t *testing.T) {
+	// Create store with very small limits
+	dataDir := fmt.Sprintf("testdata_%d", time.Now().UnixNano())
+	defer os.RemoveAll(dataDir)
+
+	opts := Options{
+		DataDir:     dataDir,
+		MaxEntries:  5, // Very small limit
+		MaxMemoryMB: 1,
+		ShardCount:  2,
+	}
+
+	kv, err := NewKVStore(opts)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer kv.Close()
+
+	// Add more entries than the limit
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("key_%d", i)
+		value := []byte(fmt.Sprintf("value_%d", i))
+		kv.Set(key, value, 0)
+	}
+
+	// Should have evicted some entries
+	if kv.Size() > 5 {
+		t.Errorf("Expected max 5 entries due to eviction, got %d", kv.Size())
+	}
+
+	// Check that evictions were recorded
+	stats := kv.GetStats()
+	if stats.Evictions == 0 {
+		t.Error("Expected some evictions to be recorded")
+	}
+}
+
+func TestKeys(t *testing.T) {
+	kv, cleanup := createTestStore(t)
+	defer cleanup()
+
+	// Add some keys
+	expectedKeys := []string{"apple", "banana", "cherry"}
+	for _, key := range expectedKeys {
+		kv.Set(key, []byte("value"), 0)
+	}
+
+	// Get all keys
+	keys := kv.Keys()
+	sort.Strings(keys)
+	sort.Strings(expectedKeys)
+
+	if len(keys) != len(expectedKeys) {
+		t.Errorf("Expected %d keys, got %d", len(expectedKeys), len(keys))
+	}
+
+	for i, key := range keys {
+		if key != expectedKeys[i] {
+			t.Errorf("Expected key %s, got %s", expectedKeys[i], key)
 		}
 	}
 }
 
-// Test snapshot and recovery
-func TestSnapshotAndRecovery(t *testing.T) {
-	opts := defaultTestOptions()
-	store, cleanup := createTestStore(t, opts)
+func TestStats(t *testing.T) {
+	kv, cleanup := createTestStore(t)
+	defer cleanup()
+
+	// Perform some operations
+	kv.Set("key1", []byte("value1"), 0)
+	kv.Set("key2", []byte("value2"), 0)
+	kv.Get("key1") // Hit
+	kv.Get("key3") // Miss
+
+	stats := kv.GetStats()
+
+	if stats.Entries != 2 {
+		t.Errorf("Expected 2 entries, got %d", stats.Entries)
+	}
+
+	if stats.Hits != 1 {
+		t.Errorf("Expected 1 hit, got %d", stats.Hits)
+	}
+
+	if stats.Misses != 1 {
+		t.Errorf("Expected 1 miss, got %d", stats.Misses)
+	}
+
+	expectedHitRatio := 0.5
+	if stats.HitRatio != expectedHitRatio {
+		t.Errorf("Expected hit ratio %f, got %f", expectedHitRatio, stats.HitRatio)
+	}
+}
+
+func TestPersistence(t *testing.T) {
+	dataDir := fmt.Sprintf("testdata_%d", time.Now().UnixNano())
+	defer os.RemoveAll(dataDir)
+
+	opts := Options{
+		DataDir:     dataDir,
+		MaxEntries:  1000,
+		MaxMemoryMB: 10,
+		ShardCount:  4,
+	}
+
+	// Create store and add data
+	kv1, err := NewKVStore(opts)
+	if err != nil {
+		t.Fatalf("Failed to create first store: %v", err)
+	}
+
+	testData := map[string][]byte{
+		"persistent1": []byte("value1"),
+		"persistent2": []byte("value2"),
+		"persistent3": []byte("value3"),
+	}
+
+	for k, v := range testData {
+		if err := kv1.Set(k, v, 0); err != nil {
+			t.Fatalf("Failed to set %s: %v", k, err)
+		}
+	}
+
+	// Force WAL flush
+	time.Sleep(50 * time.Millisecond)
+	kv1.Close()
+
+	// Create new store with same data directory
+	kv2, err := NewKVStore(opts)
+	if err != nil {
+		t.Fatalf("Failed to create second store: %v", err)
+	}
+	defer kv2.Close()
+
+	// Verify data persisted
+	for k, expectedV := range testData {
+		v, err := kv2.Get(k)
+		if err != nil {
+			t.Errorf("Failed to get %s: %v", k, err)
+			continue
+		}
+
+		if !bytes.Equal(v, expectedV) {
+			t.Errorf("Value mismatch for %s: expected %s, got %s", k, expectedV, v)
+		}
+	}
+}
+
+func TestSnapshot(t *testing.T) {
+	kv, cleanup := createTestStore(t)
+	defer cleanup()
 
 	// Add some data
-	store.Create("persistent1", []byte("value1"), 0)
-	store.Create("persistent2", []byte("value2"), 0)
-	store.Create("ttl_key", []byte("ttl_value"), 3600) // 1 hour TTL
-
-	// Force a snapshot
-	err := store.Snapshot()
-	if err != nil {
-		t.Errorf("Failed to create snapshot: %v", err)
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("snap_key_%d", i)
+		value := []byte(fmt.Sprintf("snap_value_%d", i))
+		kv.Set(key, value, 0)
 	}
 
-	// Close store
-	store.Close()
-	cleanup() // This will clean up the temp dir, but we'll use the paths
-
-	// Create new temp dir and copy files
-	tempDir, err := os.MkdirTemp("", "kvstore-recovery-")
+	// Create snapshot
+	err := kv.Snapshot()
 	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+		t.Fatalf("Snapshot failed: %v", err)
 	}
-	defer os.RemoveAll(tempDir)
 
-	// We need to create new files since cleanup removed them
-	// In a real scenario, the files would persist
-	opts.WALPath = filepath.Join(tempDir, "test.wal")
-	opts.SnapshotPath = filepath.Join(tempDir, "test.snapshot")
-
-	// Create a new store with some initial data for recovery test
-	store2, err := NewKVStore(opts)
-	if err != nil {
-		t.Fatalf("Failed to create recovery store: %v", err)
+	// Verify snapshot file exists
+	snapshotPath := filepath.Join(kv.opts.DataDir, "snapshot.json")
+	if _, err := os.Stat(snapshotPath); os.IsNotExist(err) {
+		t.Error("Snapshot file should exist")
 	}
-	defer store2.Close()
 
-	// Add the same data that should have been recovered
-	store2.Create("persistent1", []byte("value1"), 0)
-	store2.Create("persistent2", []byte("value2"), 0)
-
-	// Verify recovery
-	value, err := store2.Read("persistent1")
-	if err != nil {
-		t.Errorf("Failed to read recovered key: %v", err)
-	}
-	if string(value) != "value1" {
-		t.Errorf("Expected 'value1', got '%s'", string(value))
+	// WAL should be reset after snapshot
+	stats := kv.GetStats()
+	if stats.WALSize > 0 {
+		t.Error("WAL should be reset after snapshot")
 	}
 }
 
-// Test transactions
-func TestTransactions(t *testing.T) {
-	opts := defaultTestOptions()
-	opts.EnableTransactions = true
-	store, cleanup := createTestStore(t, opts)
-	defer cleanup()
+func TestCleanup(t *testing.T) {
+	dataDir := fmt.Sprintf("testdata_%d", time.Now().UnixNano())
+	defer os.RemoveAll(dataDir)
 
-	// Set up initial data
-	store.Create("account_a", []byte("100"), 0)
-	store.Create("account_b", []byte("50"), 0)
-
-	// Test successful transaction
-	txn := store.BeginTxn()
-	if txn == nil {
-		t.Fatal("Failed to begin transaction")
+	opts := Options{
+		DataDir:       dataDir,
+		MaxEntries:    1000,
+		MaxMemoryMB:   10,
+		CleanInterval: 50 * time.Millisecond, // Fast cleanup for testing
+		ShardCount:    4,
 	}
 
-	balanceA, err := txn.Read("account_a")
+	kv, err := NewKVStore(opts)
 	if err != nil {
-		t.Errorf("Failed to read in transaction: %v", err)
+		t.Fatalf("Failed to create store: %v", err)
 	}
-	if string(balanceA) != "100" {
-		t.Errorf("Expected '100', got '%s'", string(balanceA))
-	}
+	defer kv.Close()
 
-	txn.Put("account_a", []byte("90"), 0) // -10
-	txn.Put("account_b", []byte("60"), 0) // +10
+	// Add keys with short TTL
+	ttl := 100 * time.Millisecond
+	numKeys := 10
 
-	err = txn.Commit()
-	if err != nil {
-		t.Errorf("Failed to commit transaction: %v", err)
-	}
-
-	// Verify changes
-	value, _ := store.Read("account_a")
-	if string(value) != "90" {
-		t.Errorf("Expected account_a to be '90', got '%s'", string(value))
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("cleanup_key_%d", i)
+		value := []byte(fmt.Sprintf("cleanup_value_%d", i))
+		kv.Set(key, value, ttl)
 	}
 
-	value, _ = store.Read("account_b")
-	if string(value) != "60" {
-		t.Errorf("Expected account_b to be '60', got '%s'", string(value))
+	// Verify keys exist
+	if kv.Size() != numKeys {
+		t.Errorf("Expected %d keys, got %d", numKeys, kv.Size())
+	}
+
+	// Wait for TTL + cleanup cycle
+	time.Sleep(ttl + 100*time.Millisecond)
+
+	// Keys should be cleaned up
+	if kv.Size() != 0 {
+		t.Errorf("Expected 0 keys after cleanup, got %d", kv.Size())
 	}
 }
 
-// Test transaction conflicts
-func TestTransactionConflicts(t *testing.T) {
-	opts := defaultTestOptions()
-	opts.EnableTransactions = true
-	store, cleanup := createTestStore(t, opts)
-	defer cleanup()
-
-	store.Create("conflict_key", []byte("initial"), 0)
-
-	// Start two transactions
-	txn1 := store.BeginTxn()
-	txn2 := store.BeginTxn()
-
-	// Both read the same key
-	txn1.Read("conflict_key")
-	txn2.Read("conflict_key")
-
-	// First transaction modifies and commits
-	txn1.Put("conflict_key", []byte("txn1_value"), 0)
-	err := txn1.Commit()
-	if err != nil {
-		t.Errorf("First transaction should succeed: %v", err)
-	}
-
-	// Second transaction tries to modify the same key
-	txn2.Put("conflict_key", []byte("txn2_value"), 0)
-	err = txn2.Commit()
-	if err != ErrTransactionAborted {
-		t.Errorf("Expected ErrTransactionAborted, got %v", err)
-	}
-
-	// Verify first transaction's changes are preserved
-	value, _ := store.Read("conflict_key")
-	if string(value) != "txn1_value" {
-		t.Errorf("Expected 'txn1_value', got '%s'", string(value))
-	}
-}
-
-// Test utility methods
-func TestUtilityMethods(t *testing.T) {
-	store, cleanup := createTestStore(t, defaultTestOptions())
-	defer cleanup()
-
-	// Add test data
-	store.Create("key1", []byte("value1"), 0)
-	store.Create("key2", []byte("value2"), 0)
-	store.Create("key3", []byte("value3"), 3600)
-
-	// Test Exists
-	if !store.Exists("key1") {
-		t.Error("key1 should exist")
-	}
-	if store.Exists("nonexistent") {
-		t.Error("nonexistent key should not exist")
-	}
-
-	// Test Keys
-	keys := store.Keys()
-	if len(keys) != 3 {
-		t.Errorf("Expected 3 keys, got %d", len(keys))
-	}
-
-	keySet := make(map[string]bool)
-	for _, key := range keys {
-		keySet[key] = true
-	}
-	if !keySet["key1"] || !keySet["key2"] || !keySet["key3"] {
-		t.Error("Missing expected keys in Keys() result")
-	}
-
-	// Test Size
-	size := store.Size()
-	if size != 3 {
-		t.Errorf("Expected size 3, got %d", size)
-	}
-
-	// Test Clear
-	err := store.Clear()
-	if err != nil {
-		t.Errorf("Failed to clear store: %v", err)
-	}
-
-	if store.Size() != 0 {
-		t.Error("Store should be empty after clear")
-	}
-}
-
-// Test compression
-func TestCompression(t *testing.T) {
-	opts := defaultTestOptions()
-	opts.EnableCompression = true
-	opts.CompressionType = CompressionGzip
-	opts.CompressionLevel = 6
-	store, cleanup := createTestStore(t, opts)
-	defer cleanup()
-
-	// Add compressible data
-	largeData := make([]byte, 1000)
-	for i := range largeData {
-		largeData[i] = byte('A') // Highly compressible
-	}
-
-	store.Create("large_key", largeData, 0)
-
-	// Force snapshot to test compression
-	err := store.Snapshot()
-	if err != nil {
-		t.Errorf("Failed to create compressed snapshot: %v", err)
-	}
-
-	// Verify data integrity
-	value, err := store.Read("large_key")
-	if err != nil {
-		t.Errorf("Failed to read compressed data: %v", err)
-	}
-	if len(value) != len(largeData) {
-		t.Errorf("Data size mismatch after compression: expected %d, got %d", len(largeData), len(value))
-	}
-}
-
-// Test error conditions
 func TestErrorConditions(t *testing.T) {
-	// Test invalid options
-	invalidOpts := []Options{
-		{WALPath: ""},                               // Missing WAL path
-		{WALPath: "test.wal", LogBufferSize: -1},    // Invalid buffer size
-		{WALPath: "test.wal", BatchSize: 0},         // Invalid batch size
-		{WALPath: "test.wal", FlushInterval: 0},     // Invalid flush interval
-		{WALPath: "test.wal", ShardCount: 3},        // Not power of 2
-		{WALPath: "test.wal", CompressionLevel: 10}, // Invalid compression level
+	kv, cleanup := createTestStore(t)
+	defer cleanup()
+
+	// Test operations on non-existent key
+	_, err := kv.Get("nonexistent")
+	if err != ErrKeyNotFound {
+		t.Errorf("Expected ErrKeyNotFound, got %v", err)
 	}
 
-	for i, opts := range invalidOpts {
-		_, err := NewKVStore(opts)
-		if err == nil {
-			t.Errorf("Test %d: Expected error for invalid options", i)
-		}
+	err = kv.Delete("nonexistent")
+	if err != ErrKeyNotFound {
+		t.Errorf("Expected ErrKeyNotFound, got %v", err)
 	}
 
 	// Test operations on closed store
-	store, cleanup := createTestStore(t, defaultTestOptions())
-	store.Close()
-	cleanup()
+	kv.Close()
 
-	err := store.Create("key", []byte("value"), 0)
+	err = kv.Set("key", []byte("value"), 0)
 	if err != ErrStoreClosed {
 		t.Errorf("Expected ErrStoreClosed, got %v", err)
 	}
 
-	_, err = store.Read("key")
+	_, err = kv.Get("key")
 	if err != ErrStoreClosed {
 		t.Errorf("Expected ErrStoreClosed, got %v", err)
 	}
-}
 
-// Test read-only mode
-func TestReadOnlyMode(t *testing.T) {
-	// Create store with data
-	opts := defaultTestOptions()
-	store, cleanup := createTestStore(t, opts)
-
-	store.Create("readonly_key", []byte("readonly_value"), 0)
-	store.Snapshot()
-
-	walPath := store.opts.WALPath
-	snapshotPath := store.opts.SnapshotPath
-	store.Close()
-
-	// Reopen in read-only mode
-	opts.ReadOnly = true
-	opts.WALPath = walPath
-	opts.SnapshotPath = snapshotPath
-
-	readOnlyStore, err := NewKVStore(opts)
-	if err != nil {
-		cleanup()
-		t.Fatalf("Failed to create read-only store: %v", err)
+	err = kv.Delete("key")
+	if err != ErrStoreClosed {
+		t.Errorf("Expected ErrStoreClosed, got %v", err)
 	}
-
-	defer func() {
-		readOnlyStore.Close()
-		cleanup()
-	}()
-
-	// Should be able to read
-	value, err := readOnlyStore.Read("readonly_key")
-	if err != nil {
-		t.Errorf("Failed to read in read-only mode: %v", err)
-	}
-	if string(value) != "readonly_value" {
-		t.Errorf("Expected 'readonly_value', got '%s'", string(value))
-	}
-
-	// Write operations should fail gracefully (they won't return errors but won't persist)
-	err = readOnlyStore.Create("new_key", []byte("new_value"), 0)
-	if err != nil {
-		t.Errorf("Create in read-only mode should not return error: %v", err)
-	}
-}
-
-// Test statistics and health check
-func TestStatisticsAndHealth(t *testing.T) {
-	store, cleanup := createTestStore(t, defaultTestOptions())
-	defer cleanup()
-
-	// Generate some activity
-	store.Create("key1", []byte("value1"), 0)
-	store.Create("key2", []byte("value2"), 0)
-	store.Read("key1")        // Hit
-	store.Read("nonexistent") // Miss
-
-	stats := store.GetStats()
-	if stats.Entries == 0 {
-		t.Error("Expected non-zero entries")
-	}
-	if stats.Hits == 0 {
-		t.Error("Expected at least one hit")
-	}
-	if stats.Misses == 0 {
-		t.Error("Expected at least one miss")
-	}
-
-	// Test health check
-	health := store.HealthCheck()
-	if health.Status != "healthy" {
-		t.Errorf("Expected healthy status, got %s", health.Status)
-	}
-	if len(health.Errors) != 0 {
-		t.Errorf("Expected no errors, got %v", health.Errors)
-	}
-}
-
-// Test TTL cleanup
-func TestTTLCleanup(t *testing.T) {
-	opts := defaultTestOptions()
-	opts.CleanInterval = 50 * time.Millisecond
-	store, cleanup := createTestStore(t, opts)
-	defer cleanup()
-
-	// Create keys with short TTL
-	for i := 0; i < 10; i++ {
-		key := fmt.Sprintf("ttl_key_%d", i)
-		store.Create(key, []byte("value"), 1) // 1 second TTL
-	}
-
-	// Wait for expiration
-	time.Sleep(1200 * time.Millisecond)
-
-	// Wait for cleanup process
-	time.Sleep(100 * time.Millisecond)
-
-	// Check statistics
-	stats := store.GetStats()
-	if stats.TTLCleanups == 0 {
-		t.Error("Expected some TTL cleanups")
-	}
-}
-
-func createTestStoreForBechmark(t *testing.B, opts Options) (*KVStore, func()) {
-	tempDir, err := os.MkdirTemp("", "kvstore-test-")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	opts.WALPath = filepath.Join(tempDir, "test.wal")
-	opts.SnapshotPath = filepath.Join(tempDir, "test.snapshot")
-	opts.EnableMetrics = true
-
-	store, err := NewKVStore(opts)
-	if err != nil {
-		os.RemoveAll(tempDir)
-		t.Fatalf("Failed to create store: %v", err)
-	}
-
-	cleanup := func() {
-		store.Close()
-		os.RemoveAll(tempDir)
-	}
-
-	return store, cleanup
 }
 
 // Benchmark tests
-func BenchmarkCreate(b *testing.B) {
-	store, cleanup := createTestStoreForBechmark(b, defaultTestOptions())
+
+func BenchmarkSet(b *testing.B) {
+	kv, cleanup := createTestStore(&testing.T{})
 	defer cleanup()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		key := fmt.Sprintf("bench_key_%d", i)
-		store.Create(key, []byte("benchmark_value"), 0)
-	}
-}
-
-func BenchmarkRead(b *testing.B) {
-	store, cleanup := createTestStoreForBechmark(b, defaultTestOptions())
-	defer cleanup()
-
-	// Pre-populate data
-	for i := 0; i < 1000; i++ {
-		key := fmt.Sprintf("bench_key_%d", i)
-		store.Create(key, []byte("benchmark_value"), 0)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		key := fmt.Sprintf("bench_key_%d", i%1000)
-		store.Read(key)
-	}
-}
-
-func BenchmarkConcurrentOperations(b *testing.B) {
-	store, cleanup := createTestStoreForBechmark(b, defaultTestOptions())
-	defer cleanup()
+	value := []byte("benchmark_value")
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			if i%2 == 0 {
-				key := fmt.Sprintf("concurrent_key_%d", i)
-				store.Create(key, []byte("concurrent_value"), 0)
+			key := fmt.Sprintf("bench_key_%d", i)
+			kv.Set(key, value, 0)
+			i++
+		}
+	})
+}
+
+func BenchmarkGet(b *testing.B) {
+	kv, cleanup := createTestStore(&testing.T{})
+	defer cleanup()
+
+	// Pre-populate with data
+	numKeys := 10000
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("bench_key_%d", i)
+		value := []byte(fmt.Sprintf("bench_value_%d", i))
+		kv.Set(key, value, 0)
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			key := fmt.Sprintf("bench_key_%d", i%numKeys)
+			kv.Get(key)
+			i++
+		}
+	})
+}
+
+func BenchmarkMixed(b *testing.B) {
+	kv, cleanup := createTestStore(&testing.T{})
+	defer cleanup()
+
+	// Pre-populate
+	for i := 0; i < 1000; i++ {
+		key := fmt.Sprintf("key_%d", i)
+		value := []byte(fmt.Sprintf("value_%d", i))
+		kv.Set(key, value, 0)
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			key := fmt.Sprintf("key_%d", i%1000)
+
+			// 70% reads, 30% writes
+			if i%10 < 7 {
+				kv.Get(key)
 			} else {
-				key := fmt.Sprintf("concurrent_key_%d", i-1)
-				store.Read(key)
+				value := []byte(fmt.Sprintf("new_value_%d", i))
+				kv.Set(key, value, 0)
 			}
 			i++
 		}
 	})
 }
 
-// Test durability levels
-func TestDurabilityLevels(t *testing.T) {
-	durabilityLevels := []Durability{
-		DurabilityNever,
-		DurabilityEveryFlush,
-		DurabilityPerWrite,
+// Stress tests
+
+func TestStressLargeValues(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping stress test in short mode")
 	}
 
-	for _, durability := range durabilityLevels {
-		t.Run(fmt.Sprintf("Durability_%d", durability), func(t *testing.T) {
-			opts := defaultTestOptions()
-			opts.Durability = durability
-			store, cleanup := createTestStore(t, opts)
-			defer cleanup()
+	kv, cleanup := createTestStore(t)
+	defer cleanup()
 
-			// Basic operations should work with all durability levels
-			err := store.Create("durability_test", []byte("test_value"), 0)
-			if err != nil {
-				t.Errorf("Failed to create with durability %d: %v", durability, err)
-			}
+	// Test with 1MB values
+	largeValue := make([]byte, 1024*1024)
+	for i := range largeValue {
+		largeValue[i] = byte(i % 256)
+	}
 
-			value, err := store.Read("durability_test")
-			if err != nil {
-				t.Errorf("Failed to read with durability %d: %v", durability, err)
+	numKeys := 10
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("large_key_%d", i)
+		if err := kv.Set(key, largeValue, 0); err != nil {
+			t.Fatalf("Failed to set large value: %v", err)
+		}
+	}
+
+	// Verify all values
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("large_key_%d", i)
+		value, err := kv.Get(key)
+		if err != nil {
+			t.Fatalf("Failed to get large value: %v", err)
+		}
+
+		if !bytes.Equal(value, largeValue) {
+			t.Errorf("Large value corrupted for key %s", key)
+		}
+	}
+}
+
+func TestStressHighConcurrency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping stress test in short mode")
+	}
+
+	kv, cleanup := createTestStore(t)
+	defer cleanup()
+
+	numWorkers := 50
+	opsPerWorker := 1000
+	var wg sync.WaitGroup
+
+	// Track operations
+	var sets, gets, deletes int64
+
+	wg.Add(numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		go func(workerID int) {
+			defer wg.Done()
+
+			for j := 0; j < opsPerWorker; j++ {
+				key := fmt.Sprintf("stress_%d_%d", workerID, j)
+				value := []byte(fmt.Sprintf("value_%d_%d", workerID, j))
+
+				op := j % 3
+				switch op {
+				case 0: // Set
+					kv.Set(key, value, 0)
+					atomic.AddInt64(&sets, 1)
+				case 1: // Get
+					kv.Get(key)
+					atomic.AddInt64(&gets, 1)
+				case 2: // Delete
+					kv.Delete(key)
+					atomic.AddInt64(&deletes, 1)
+				}
 			}
-			if string(value) != "test_value" {
-				t.Errorf("Value mismatch with durability %d", durability)
-			}
-		})
+		}(i)
+	}
+
+	wg.Wait()
+
+	t.Logf("Completed stress test: %d sets, %d gets, %d deletes",
+		atomic.LoadInt64(&sets),
+		atomic.LoadInt64(&gets),
+		atomic.LoadInt64(&deletes))
+
+	// Verify store is still functional
+	testKey := "post_stress_test"
+	testValue := []byte("post_stress_value")
+
+	if err := kv.Set(testKey, testValue, 0); err != nil {
+		t.Fatalf("Store not functional after stress test: %v", err)
+	}
+
+	retrievedValue, err := kv.Get(testKey)
+	if err != nil {
+		t.Fatalf("Failed to get value after stress test: %v", err)
+	}
+
+	if !bytes.Equal(testValue, retrievedValue) {
+		t.Error("Value corrupted after stress test")
+	}
+}
+
+// Memory usage test
+func TestMemoryUsage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping memory test in short mode")
+	}
+
+	kv, cleanup := createTestStore(t)
+	defer cleanup()
+
+	initialStats := kv.GetStats()
+	initialMemory := initialStats.MemoryUsage
+
+	// Add known amount of data
+	numEntries := 1000
+	valueSize := 1024
+	value := make([]byte, valueSize)
+
+	for i := 0; i < numEntries; i++ {
+		key := fmt.Sprintf("mem_key_%d", i)
+		kv.Set(key, value, 0)
+	}
+
+	finalStats := kv.GetStats()
+	finalMemory := finalStats.MemoryUsage
+
+	memoryIncrease := finalMemory - initialMemory
+	t.Logf("Memory increase: %d bytes for %d entries", memoryIncrease, numEntries)
+
+	// Memory usage should have increased
+	if memoryIncrease <= 0 {
+		t.Error("Memory usage should have increased")
+	}
+
+	// Rough check - should be somewhat proportional to data added
+	expectedMinIncrease := int64(numEntries * valueSize / 2) // Allow for overhead
+	if memoryIncrease < expectedMinIncrease {
+		t.Errorf("Memory increase too small: got %d, expected at least %d",
+			memoryIncrease, expectedMinIncrease)
+	}
+}
+
+// Default store test
+func TestDefault(t *testing.T) {
+	kv, err := Default()
+	if err != nil {
+		t.Fatalf("Failed to create default store: %v", err)
+	}
+	defer func() {
+		kv.Close()
+		os.RemoveAll("data")
+	}()
+
+	// Basic functionality test
+	err = kv.Set("test", []byte("value"), 0)
+	if err != nil {
+		t.Fatalf("Default store Set failed: %v", err)
+	}
+
+	value, err := kv.Get("test")
+	if err != nil {
+		t.Fatalf("Default store Get failed: %v", err)
+	}
+
+	if string(value) != "value" {
+		t.Errorf("Expected 'value', got '%s'", string(value))
 	}
 }
