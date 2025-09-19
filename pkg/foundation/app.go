@@ -35,6 +35,103 @@ type App struct {
 
 type Option func(*App)
 
+// Handler is the function signature for handling HTTP requests with route parameters.
+type Handler = router.Handler
+
+// ResourceController describes RESTful resource handlers.
+type ResourceController = router.ResourceController
+
+// BaseResourceController provides default (not implemented) REST handlers.
+type BaseResourceController = router.BaseResourceController
+
+// RouteRegister exposes routing capabilities required by handlers and registrars.
+type RouteRegister interface {
+	Get(path string, handler Handler)
+	Post(path string, handler Handler)
+	Put(path string, handler Handler)
+	Delete(path string, handler Handler)
+	Patch(path string, handler Handler)
+	Any(path string, handler Handler)
+	Group(prefix string) RouteRegister
+	Register(registrars ...RouteRegistrar)
+	Resource(path string, controller ResourceController)
+}
+
+// RouteRegistrar registers routes onto a RouteRegister instance.
+type RouteRegistrar interface {
+	Register(r RouteRegister)
+}
+
+type routeScope struct {
+	router *router.Router
+}
+
+var (
+	_ RouteRegister = (*App)(nil)
+	_ RouteRegister = (*routeScope)(nil)
+)
+
+func newRouteScope(r *router.Router) *routeScope {
+	return &routeScope{router: r}
+}
+
+func (s *routeScope) Get(path string, handler Handler) {
+	s.router.Get(path, handler)
+}
+
+func (s *routeScope) Post(path string, handler Handler) {
+	s.router.Post(path, handler)
+}
+
+func (s *routeScope) Put(path string, handler Handler) {
+	s.router.Put(path, handler)
+}
+
+func (s *routeScope) Delete(path string, handler Handler) {
+	s.router.Delete(path, handler)
+}
+
+func (s *routeScope) Patch(path string, handler Handler) {
+	s.router.Patch(path, handler)
+}
+
+func (s *routeScope) Any(path string, handler Handler) {
+	s.router.Any(path, handler)
+}
+
+func (s *routeScope) Group(prefix string) RouteRegister {
+	return newRouteScope(s.router.Group(prefix))
+}
+
+func (s *routeScope) Register(registrars ...RouteRegistrar) {
+	if adapters := adaptRegistrars(registrars); len(adapters) > 0 {
+		s.router.Register(adapters...)
+	}
+}
+
+func (s *routeScope) Resource(path string, controller ResourceController) {
+	s.router.Resource(path, controller)
+}
+
+func adaptRegistrars(registrars []RouteRegistrar) []router.RouteRegistrar {
+	adapters := make([]router.RouteRegistrar, 0, len(registrars))
+	for _, reg := range registrars {
+		if reg == nil {
+			continue
+		}
+		adapters = append(adapters, routeRegistrarAdapter{registrar: reg})
+	}
+	return adapters
+}
+
+type routeRegistrarAdapter struct {
+	registrar RouteRegistrar
+}
+
+func (a routeRegistrarAdapter) Register(r *router.Router) {
+	a.registrar.Register(newRouteScope(r))
+}
+
 // WithMux sets the http.ServeMux for the App
 func WithMux(mux *http.ServeMux) Option {
 	return func(a *App) {
@@ -92,6 +189,53 @@ func (a *App) HandleFunc(pattern string, handler http.HandlerFunc) {
 // It's a wrapper around http.ServeMux.Handle
 func (a *App) Handle(pattern string, handler http.Handler) {
 	a.mux.Handle(pattern, handler)
+}
+
+// Get registers a GET route handler on the app router.
+func (a *App) Get(path string, handler Handler) {
+	a.router.Get(path, handler)
+}
+
+// Post registers a POST route handler on the app router.
+func (a *App) Post(path string, handler Handler) {
+	a.router.Post(path, handler)
+}
+
+// Put registers a PUT route handler on the app router.
+func (a *App) Put(path string, handler Handler) {
+	a.router.Put(path, handler)
+}
+
+// Delete registers a DELETE route handler on the app router.
+func (a *App) Delete(path string, handler Handler) {
+	a.router.Delete(path, handler)
+}
+
+// Patch registers a PATCH route handler on the app router.
+func (a *App) Patch(path string, handler Handler) {
+	a.router.Patch(path, handler)
+}
+
+// Any registers a route handler that responds to any HTTP method.
+func (a *App) Any(path string, handler Handler) {
+	a.router.Any(path, handler)
+}
+
+// Group creates a route group with the given prefix.
+func (a *App) Group(prefix string) RouteRegister {
+	return newRouteScope(a.router.Group(prefix))
+}
+
+// Register registers route registrars with the app router.
+func (a *App) Register(registrars ...RouteRegistrar) {
+	if adapters := adaptRegistrars(registrars); len(adapters) > 0 {
+		a.router.Register(adapters...)
+	}
+}
+
+// Resource registers RESTful routes for the given controller at the specified path.
+func (a *App) Resource(path string, controller ResourceController) {
+	a.router.Resource(path, controller)
 }
 
 // Use applies middleware to the router

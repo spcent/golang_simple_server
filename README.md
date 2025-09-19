@@ -39,13 +39,13 @@ make run   # Build and start the server (default port: 8080)
 
 ## Routing
 
-Register parameterized routes with `router.(Get|Post|Delete|Put)` (see `main.go` for examples):
+Register parameterized routes directly on the `foundation.App` instance with `app.(Get|Post|Delete|Put)` (see `main.go` for examples):
 
 ```go
-r.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+app.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
     // Access params["name"]
 })
-r.Get("/users/:id/posts/:postID", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+app.Get("/users/:id/posts/:postID", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
     // Access params["id"] and params["postID"]
 })
 ```
