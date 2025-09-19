@@ -103,28 +103,42 @@ app.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
 })
 ```
 
-### 4.2 使用框架路由器
+### 4.2 使用 App 层路由 API
 
-对于更复杂的路由需求，可以获取框架的路由器并使用其高级功能：
+`foundation.App` 提供了与底层路由器对应的 HTTP 方法助手，大部分场景无需再引入 `router` 包即可完成路由注册：
 
 ```go
-// Router 返回底层路由器用于高级配置
-func (a *App) Router() *router.Router
+// 直接在 App 上注册各种 HTTP 方法
+func (a *App) Get(path string, handler Handler)
+func (a *App) Post(path string, handler Handler)
+func (a *App) Put(path string, handler Handler)
+func (a *App) Delete(path string, handler Handler)
+func (a *App) Patch(path string, handler Handler)
+func (a *App) Any(path string, handler Handler)
+
+// 创建子路由组与注册器
+func (a *App) Group(prefix string) RouteRegister
+func (a *App) Register(registrars ...RouteRegistrar)
 ```
 
 示例：
 
 ```go
-r := app.Router()
-
-// 注册带参数的路由
-r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+app.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
     id := params["id"]
     w.Write([]byte(`{"user_id":"` + id + `"}`))
 })
 
-// 注册路由注册器
-r.Register(&UserHandler{}, &PostHandler{})
+api := app.Group("/api")
+api.Post("/posts", createPostHandler)
+
+app.Register(&UserHandler{}, &PostHandler{})
+```
+
+如果需要更高级的用法，仍然可以获取底层路由器：
+
+```go
+r := app.Router() // *router.Router
 ```
 
 ## 5. 中间件应用
@@ -309,19 +323,19 @@ package main
 import (
     "fmt"
     "net/http"
+
     "github.com/spcent/golang_simple_server/pkg/foundation"
-    "github.com/spcent/golang_simple_server/pkg/router"
 )
 
 // 定义路由注册器
 type UserHandler struct{}
 
-func (h *UserHandler) Register(r *router.Router) {
+func (h *UserHandler) Register(r foundation.RouteRegister) {
     r.Get("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         w.Header().Set("Content-Type", "application/json")
         fmt.Fprintln(w, `{"users": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]}`)
     })
-    
+
     r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         id := params["id"]
         w.Header().Set("Content-Type", "application/json")
@@ -336,11 +350,8 @@ func main() {
         foundation.WithEnvPath("./.env"),     // 从当前目录加载 .env 文件
     )
     
-    // 获取路由器
-    r := app.Router()
-    
     // 注册路由注册器
-    r.Register(&UserHandler{})
+    app.Register(&UserHandler{})
     
     // 直接注册路由
     app.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {

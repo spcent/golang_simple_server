@@ -67,16 +67,13 @@ import (
 func main() {
     app := foundation.New()
     
-    // Get router and register routes
-    r := app.Router()
-    
-    // Register basic routes
-    r.Get("/hello", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    // Register basic routes directly on the app
+    app.Get("/hello", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         w.Write([]byte(`{"message":"Hello, World!"}`))
     })
-    
+
     // Register routes with parameters
-    r.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    app.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         name := params["name"]
         w.Write([]byte(`{"message":"Hello, ` + name + `!"}`))
     })
@@ -110,10 +107,14 @@ app := foundation.New(
 
 #### 4.1.2 Main Methods
 
+- `Get/Post/Put/Delete/Patch/Any(path string, handler foundation.Handler)`: Register HTTP method handlers with path parameters
+- `Group(prefix string) foundation.RouteRegister`: Create sub-route groups
+- `Register(registrars ...foundation.RouteRegistrar)`: Register route registrars without importing the router package
+- `Resource(path string, controller foundation.ResourceController)`: Quickly wire RESTful resources
 - `HandleFunc(pattern string, handler http.HandlerFunc)`: Register handler function (standard http.HandlerFunc)
 - `Handle(pattern string, handler http.Handler)`: Register handler (standard http.Handler)
 - `Use(middlewares ...middleware.Middleware)`: Apply middleware
-- `Router() *router.Router`: Get framework router
+- `Router() *router.Router`: Get framework router (advanced usage)
 - `Boot()`: Initialize and start HTTP server
 - `Logging() middleware.Middleware`: Get logging middleware
 - `Auth() middleware.Middleware`: Get authentication middleware
@@ -300,19 +301,19 @@ package main
 import (
     "fmt"
     "net/http"
+
     "github.com/spcent/golang_simple_server/pkg/foundation"
-    "github.com/spcent/golang_simple_server/pkg/router"
 )
 
 // Define route registrar
 type UserHandler struct{}
 
-func (h *UserHandler) Register(r *router.Router) {
+func (h *UserHandler) Register(r foundation.RouteRegister) {
     r.Get("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         w.Header().Set("Content-Type", "application/json")
         fmt.Fprintln(w, `{"users": ["user1", "user2", "user3"]}`)
     })
-    
+
     r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         id := params["id"]
         w.Header().Set("Content-Type", "application/json")
@@ -326,14 +327,11 @@ func main() {
         foundation.WithAddr(":8080"),
     )
     
-    // Get router
-    r := app.Router()
-    
     // Register handler
-    r.Register(&UserHandler{})
-    
+    app.Register(&UserHandler{})
+
     // Register direct route
-    r.Get("/", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    app.Get("/", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         w.Write([]byte("Welcome to Go Simple Server!"))
     })
     

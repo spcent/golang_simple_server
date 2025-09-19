@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/spcent/golang_simple_server/pkg/router"
+	"github.com/spcent/golang_simple_server/pkg/foundation"
 )
 
 type HealthHandler struct{}
 
-func (h *HealthHandler) Register(r *router.Router) {
+func (h *HealthHandler) Register(r foundation.RouteRegister) {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "OK")

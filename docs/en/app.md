@@ -103,28 +103,42 @@ app.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
 })
 ```
 
-### 4.2 Using the Framework Router
+### 4.2 Using the App Routing Helpers
 
-For more complex routing requirements, you can get the framework's router and use its advanced features:
+`foundation.App` exposes HTTP method helpers that proxy to the underlying router, so most applications can register routes without importing the `router` package directly:
 
 ```go
-// Router returns the underlying router for advanced configuration
-func (a *App) Router() *router.Router
+// Register HTTP method handlers directly on the app
+func (a *App) Get(path string, handler Handler)
+func (a *App) Post(path string, handler Handler)
+func (a *App) Put(path string, handler Handler)
+func (a *App) Delete(path string, handler Handler)
+func (a *App) Patch(path string, handler Handler)
+func (a *App) Any(path string, handler Handler)
+
+// Create sub-groups and registrars
+func (a *App) Group(prefix string) RouteRegister
+func (a *App) Register(registrars ...RouteRegistrar)
 ```
 
 Example:
 
 ```go
-r := app.Router()
-
-// Register routes with parameters
-r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+app.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
     id := params["id"]
     w.Write([]byte(`{"user_id":"` + id + `"}`))
 })
 
-// Register route registrars
-r.Register(&UserHandler{}, &PostHandler{})
+api := app.Group("/api")
+api.Post("/posts", createPostHandler)
+
+app.Register(&UserHandler{}, &PostHandler{})
+```
+
+For advanced scenarios you can still access the underlying router:
+
+```go
+r := app.Router() // *router.Router
 ```
 
 ## 5. Middleware Application
@@ -310,19 +324,19 @@ package main
 import (
     "fmt"
     "net/http"
+
     "github.com/spcent/golang_simple_server/pkg/foundation"
-    "github.com/spcent/golang_simple_server/pkg/router"
 )
 
 // Define route registrar
 type UserHandler struct{}
 
-func (h *UserHandler) Register(r *router.Router) {
+func (h *UserHandler) Register(r foundation.RouteRegister) {
     r.Get("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         w.Header().Set("Content-Type", "application/json")
         fmt.Fprintln(w, `{"users": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]}`)
     })
-    
+
     r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         id := params["id"]
         w.Header().Set("Content-Type", "application/json")
@@ -337,12 +351,9 @@ func main() {
         foundation.WithEnvPath("./.env"),     // Load .env file from current directory
     )
     
-    // Get router
-    r := app.Router()
-    
     // Register route registrar
-    r.Register(&UserHandler{})
-    
+    app.Register(&UserHandler{})
+
     // Directly register routes
     app.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte("pong"))

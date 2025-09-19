@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/spcent/golang_simple_server/pkg/router"
+	"github.com/spcent/golang_simple_server/pkg/foundation"
 )
 
-func RegisterRoutes(r *router.Router) {
+func RegisterRoutes(r foundation.RouteRegister) {
 	r.Get("/hello/{name}", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		name := params["name"]
 		w.Header().Set("Content-Type", "application/json")

@@ -67,16 +67,13 @@ import (
 func main() {
     app := foundation.New()
     
-    // 获取路由器并注册路由
-    r := app.Router()
-    
-    // 注册基本路由
-    r.Get("/hello", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    // 直接在 App 上注册基础路由
+    app.Get("/hello", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         w.Write([]byte(`{"message":"Hello, World!"}`))
     })
-    
+
     // 注册带参数的路由
-    r.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    app.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         name := params["name"]
         w.Write([]byte(`{"message":"Hello, ` + name + `!"}`))
     })
@@ -110,10 +107,14 @@ app := foundation.New(
 
 #### 4.1.2 主要方法
 
+- `Get/Post/Put/Delete/Patch/Any(path string, handler foundation.Handler)`: 注册支持路径参数的 HTTP 方法处理器
+- `Group(prefix string) foundation.RouteRegister`: 创建子路由组
+- `Register(registrars ...foundation.RouteRegistrar)`: 注册路由注册器，无需引入 router 包
+- `Resource(path string, controller foundation.ResourceController)`: 快速绑定 RESTful 资源
 - `HandleFunc(pattern string, handler http.HandlerFunc)`: 注册处理函数（标准 http.HandlerFunc）
 - `Handle(pattern string, handler http.Handler)`: 注册处理器（标准 http.Handler）
 - `Use(middlewares ...middleware.Middleware)`: 应用中间件
-- `Router() *router.Router`: 获取框架路由器
+- `Router() *router.Router`: 获取框架路由器（高级用法）
 - `Boot()`: 初始化并启动 HTTP 服务器
 - `Logging() middleware.Middleware`: 获取日志中间件
 - `Auth() middleware.Middleware`: 获取认证中间件
@@ -300,19 +301,19 @@ package main
 import (
     "fmt"
     "net/http"
+
     "github.com/spcent/golang_simple_server/pkg/foundation"
-    "github.com/spcent/golang_simple_server/pkg/router"
 )
 
 // 定义路由注册器
 type UserHandler struct{}
 
-func (h *UserHandler) Register(r *router.Router) {
+func (h *UserHandler) Register(r foundation.RouteRegister) {
     r.Get("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         w.Header().Set("Content-Type", "application/json")
         fmt.Fprintln(w, `{"users": ["user1", "user2", "user3"]}`)
     })
-    
+
     r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         id := params["id"]
         w.Header().Set("Content-Type", "application/json")
@@ -326,14 +327,11 @@ func main() {
         foundation.WithAddr(":8080"),
     )
     
-    // 获取路由器
-    r := app.Router()
-    
     // 注册处理器
-    r.Register(&UserHandler{})
-    
+    app.Register(&UserHandler{})
+
     // 注册直接路由
-    r.Get("/", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    app.Get("/", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
         w.Write([]byte("Welcome to Go Simple Server!"))
     })
     

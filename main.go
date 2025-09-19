@@ -18,8 +18,8 @@ func main() {
 	hub := app.ConfigureWebSocket()
 	defer hub.Stop()
 
-	// Get the router and register routes
-	handlers.RegisterRoutes(app.Router())
+	// Register application routes via the foundation app API
+	handlers.RegisterRoutes(app)
 
 	// Apply middleware
 	app.Use(app.Logging())
