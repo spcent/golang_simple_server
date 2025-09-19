@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-// Auth middleware (requires Header: X-Token: secret)
+// Auth middleware validates the X-Token header against the AUTH_TOKEN environment variable when it is set.
 func Auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := r.Header.Get("X-Token")

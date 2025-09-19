@@ -262,18 +262,27 @@ func (r *Router) Resource(path string, c ResourceController) {
 	r.Patch(path+"/:id", c.Patch)
 }
 
+// Print prints all registered routes grouped by method.
+// Wildcard routes are marked specially.
 func (r *Router) Print(w io.Writer) {
 	fmt.Fprintln(w, "Registered Routes:")
+
 	methods := make([]string, 0, len(r.routes))
 	for m := range r.routes {
 		methods = append(methods, m)
 	}
 	sort.Strings(methods)
+
 	for _, m := range methods {
 		rs := r.routes[m]
 		sort.Slice(rs, func(i, j int) bool { return rs[i].Path < rs[j].Path })
+
 		for _, rt := range rs {
-			fmt.Fprintf(w, "%-6s %s\n", rt.Method, rt.Path)
+			label := rt.Path
+			if strings.Contains(rt.Path, "/*") {
+				label += "   [wildcard]"
+			}
+			fmt.Fprintf(w, "%-6s %s\n", rt.Method, label)
 		}
 	}
 }

@@ -19,9 +19,10 @@ func Apply(h http.HandlerFunc, m ...Middleware) http.HandlerFunc {
 		h = m[i](h)
 	}
 
-	for _, m := range m {
-		h = m(h)
-	}
-
 	return h
+}
+
+// ApplyGlobal applies all global middlewares to the handler
+func ApplyGlobal(h http.HandlerFunc) http.HandlerFunc {
+	return Apply(h, middlewares...)
 }

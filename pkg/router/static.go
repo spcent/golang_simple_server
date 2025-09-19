@@ -39,3 +39,39 @@ func (r *Router) Static(prefix, dir string) {
 		http.ServeFile(w, req, fullPath)
 	})
 }
+
+// StaticFS registers a route that serves files from a custom http.FileSystem.
+//
+// This allows serving from embedded filesystems (e.g., embed.FS) or other backends.
+//
+// Example:
+//
+//	//go:embed public/*
+//	var public embed.FS
+//
+//	r.StaticFS("/assets", http.FS(public))
+//	GET /assets/index.html → served from embedded FS
+func (r *Router) StaticFS(prefix string, fs http.FileSystem) {
+	// Ensure prefix always starts with "/"
+	if prefix == "" || prefix[0] != '/' {
+		prefix = "/" + prefix
+	}
+
+	// Register a GET route with wildcard *filepath
+	r.Get(prefix+"/*filepath", func(w http.ResponseWriter, req *http.Request, params map[string]string) {
+		relPath := params["filepath"]
+
+		// Clean the relative path to avoid directory traversal
+		cleanPath := filepath.Clean(relPath)
+
+		f, err := fs.Open(cleanPath)
+		if err != nil {
+			http.NotFound(w, req)
+			return
+		}
+		defer f.Close()
+
+		// Use http.FileServer logic by stripping the prefix
+		http.FileServer(fs).ServeHTTP(w, req)
+	})
+}
