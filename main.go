@@ -33,12 +33,10 @@ func main() {
 	// Register routes via handlers package
 	handlers.RegisterRoutes(app.Router())
 
-	// Apply middleware
-	app.Use(
-		app.Logging(),
-		// Add rate limiting: 10 requests per second with burst up to 20
-		app.RateLimit(10, 20),
-	)
+	// Apply middleware using more elegant methods
+	app.EnableLogging()
+	// Add rate limiting: 10 requests per second with burst up to 20
+	app.EnableRateLimit(10, 20)
 
 	// Boot the application
 	// HTTPS can also be enabled via command line flags:

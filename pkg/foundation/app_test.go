@@ -307,32 +307,6 @@ func TestUseMultipleMiddlewares(t *testing.T) {
 	// We can't assert the exact order since we can't mock router.ServeHTTP
 }
 
-// TestLoggingMiddleware tests that the Logging method returns a non-nil middleware
-func TestLoggingMiddleware(t *testing.T) {
-	app := New()
-
-	// Get the logging middleware
-	loggingMw := app.Logging()
-
-	// Assert that the returned middleware is not nil
-	if loggingMw == nil {
-		t.Errorf("Logging method should return a non-nil middleware function")
-	}
-}
-
-// TestAuthMiddleware tests that the Auth method returns a non-nil middleware
-func TestAuthMiddleware(t *testing.T) {
-	app := New()
-
-	// Get the auth middleware
-	authMw := app.Auth()
-
-	// Assert that the returned middleware is not nil
-	if authMw == nil {
-		t.Errorf("Auth method should return a non-nil middleware function")
-	}
-}
-
 // TestBoot tests the Boot method with mocked dependencies
 // This is a basic test that focuses on configuration rather than actual server startup
 func TestBoot(t *testing.T) {

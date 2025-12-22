@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -19,24 +18,23 @@ import (
 )
 
 var (
-	addr     = flag.String("addr", "", "Server address to listen on")
-	env      = flag.String("env", "", "Path to .env file")
-	tlsCert  = flag.String("tls-cert", "", "Path to TLS certificate file")
-	tlsKey   = flag.String("tls-key", "", "Path to TLS private key file")
+	addr      = flag.String("addr", "", "Server address to listen on")
+	env       = flag.String("env", "", "Path to .env file")
+	tlsCert   = flag.String("tls-cert", "", "Path to TLS certificate file")
+	tlsKey    = flag.String("tls-key", "", "Path to TLS private key file")
 	enableTLS = flag.Bool("tls", false, "Enable HTTPS support")
 )
 
 type App struct {
-	addr     string         // bind address
-	envFile  string         // path to .env file
-	mux      *http.ServeMux // http serve mux for router
-	router   *router.Router // router for http request
-	wsHub    *ws.Hub        // WebSocket hub
-	wsOnce   sync.Once      // Ensure WebSocket is configured only once
-	started  bool           // Whether the app has started
-	tlsCert  string         // Path to TLS certificate file
-	tlsKey   string         // Path to TLS private key file
-	enableTLS bool          // Whether to enable TLS
+	addr      string         // bind address
+	envFile   string         // path to .env file
+	mux       *http.ServeMux // http serve mux for router
+	router    *router.Router // router for http request
+	wsHub     *ws.Hub        // WebSocket hub
+	started   bool           // Whether the app has started
+	tlsCert   string         // Path to TLS certificate file
+	tlsKey    string         // Path to TLS private key file
+	enableTLS bool           // Whether to enable TLS
 }
 
 // Option defines a function type for configuring the App
@@ -198,7 +196,7 @@ func (a *App) AnyHandler(path string, handler router.Handler) {
 func (a *App) Use(middlewares ...any) {
 	// Convert all middlewares to Middleware type
 	typedMiddlewares := make([]middleware.Middleware, 0, len(middlewares))
-	
+
 	for _, mw := range middlewares {
 		switch v := mw.(type) {
 		case middleware.Middleware:
@@ -210,28 +208,28 @@ func (a *App) Use(middlewares ...any) {
 			panic("invalid middleware type")
 		}
 	}
-	
+
 	// Create a middleware chain
 	chain := middleware.NewChain(typedMiddlewares...)
-	
+
 	// Create a handler that tries the router first, then the mux
 	combinedHandler := func(w http.ResponseWriter, r *http.Request) {
 		// Create a response recorder to check if the router handled the request
 		rr := &responseRecorder{ResponseWriter: w, statusCode: http.StatusNotFound}
-		
+
 		// Try the router first
 		a.router.ServeHTTP(rr, r)
-		
+
 		// If the router didn't handle the request (status 404), try the mux
 		if rr.statusCode == http.StatusNotFound {
 			// Use the mux's handlers directly
 			a.mux.ServeHTTP(w, r)
 		}
 	}
-	
+
 	// Apply middleware chain to the combined handler
 	wrappedHandler := chain.ApplyFunc(combinedHandler)
-	
+
 	// Register the wrapped handler to the root
 	// This ensures all requests go through our middleware chain
 	a.mux.HandleFunc("/", wrappedHandler)
@@ -283,7 +281,7 @@ func (a *App) Boot() {
 	if addr != nil && *addr != "" {
 		a.addr = *addr
 	}
-	
+
 	// Apply TLS flags if provided
 	if enableTLS != nil && *enableTLS {
 		a.enableTLS = true
@@ -296,7 +294,7 @@ func (a *App) Boot() {
 		a.tlsKey = *tlsKey
 		a.enableTLS = true
 	}
-	
+
 	server := &http.Server{
 		Addr:    a.addr,
 		Handler: a.mux,
@@ -419,19 +417,19 @@ func (a *App) ConfigureWebSocketWithOptions(config WebSocketConfig) *ws.Hub {
 	return hub
 }
 
-// Logging returns the logging middleware
-func (a *App) Logging() middleware.Middleware {
-	return middleware.FromFuncMiddleware(middleware.Logging)
+// EnableLogging enables the logging middleware
+func (a *App) EnableLogging() {
+	a.Use(middleware.FromFuncMiddleware(middleware.Logging))
 }
 
-// Auth returns the auth middleware
-func (a *App) Auth() middleware.Middleware {
-	return middleware.FromFuncMiddleware(middleware.Auth)
+// EnableAuth enables the auth middleware
+func (a *App) EnableAuth() {
+	a.Use(middleware.FromFuncMiddleware(middleware.Auth))
 }
 
-// RateLimit returns a rate limiting middleware with the given configuration
+// EnableRateLimit enables the rate limiting middleware with the given configuration
 // rate: requests per second
 // capacity: maximum burst size
-func (a *App) RateLimit(rate float64, capacity int) middleware.Middleware {
-	return middleware.RateLimit(rate, capacity, time.Minute, 5*time.Minute)
+func (a *App) EnableRateLimit(rate float64, capacity int) {
+	a.Use(middleware.RateLimit(rate, capacity, time.Minute, 5*time.Minute))
 }

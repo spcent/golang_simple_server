@@ -53,7 +53,6 @@ type segment struct {
 type node struct {
 	path      string   // path segment
 	fullPath  string   // full path for this node (only set for nodes with handlers)
-	wildChild *node    // wildcard child node
 	indices   string   // string of child path starts (optimized for lookup)
 	children  []*node  // child nodes
 	handler   Handler  // handler for this node
@@ -369,7 +368,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 							break
 						}
 					}
-					break
 				}
 			}
 
