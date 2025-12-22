@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/spcent/golang_simple_server/pkg/core"
+	"github.com/spcent/golang_simple_server/pkg/middleware"
 )
 
 func main() {
@@ -35,13 +36,14 @@ func main() {
 		w.Write([]byte(fmt.Sprintf(`{"user_id":"%s"}`, userID)))
 	})
 
-	// Apply middleware
-	app.Use(func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
+	// Apply middleware using the correct middleware.Middleware type
+	middlewareFunc := func(h middleware.Handler) middleware.Handler {
+		return middleware.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("[Middleware] Request: %s %s\n", r.Method, r.URL.Path)
-			next(w, r)
-		}
-	})
+			h.ServeHTTP(w, r)
+		}))
+	}
+	app.Use(middlewareFunc)
 
 	// Start the server
 	fmt.Println("Server starting on :8080...")

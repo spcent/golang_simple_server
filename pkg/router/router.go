@@ -314,68 +314,15 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	parts := strings.Split(path, "/")
 	params := make(map[string]string)
 
-	// Perform trie-based route matching
-	handler, paramValues := r.matchRoute(tree, parts)
+	// Perform trie-based route matching and get handler, param values, and param keys
+	handler, paramValues, paramKeys := r.matchRoute(tree, parts)
 	if handler == nil {
 		http.NotFound(w, req)
 		return
 	}
 
-	// Set parameter values
-	if len(paramValues) > 0 {
-		current := tree
-		paramKeys := make([]string, 0, len(paramValues))
-
-		// Reconstruct paramKeys by traversing the tree again
-		for i, part := range parts {
-			// Try exact match first
-			child := r.findChildForPath(current, part)
-
-			// If no exact match, try param or wildcard match
-			if child == nil {
-				paramChild := r.findParamChild(current)
-				if paramChild != nil {
-					child = paramChild
-				} else {
-					wildChild := r.findWildChild(current)
-					if wildChild != nil {
-						child = wildChild
-					} else {
-						break
-					}
-				}
-			}
-
-			// Check if this is a param or wildcard segment
-			if len(child.path) > 0 {
-				switch child.path[0] {
-				case ':':
-					// This is a param segment, extract param name from original route
-					for _, route := range r.routes[method] {
-						routeParts := compileTemplate(route.Path)
-						if len(routeParts) == len(parts) {
-							if routeParts[i].isParam {
-								paramKeys = append(paramKeys, routeParts[i].paramName)
-								break
-							}
-						}
-					}
-				case '*':
-					// This is a wildcard segment, extract param name from original route
-					for _, route := range r.routes[method] {
-						routeParts := compileTemplate(route.Path)
-						if len(routeParts) > 0 && routeParts[len(routeParts)-1].isWild {
-							paramKeys = append(paramKeys, routeParts[len(routeParts)-1].paramName)
-							break
-						}
-					}
-				}
-			}
-
-			current = child
-		}
-
-		// Assign param values
+	// Assign parameter values to map
+	if len(paramValues) > 0 && len(paramKeys) > 0 {
 		for i, key := range paramKeys {
 			if i < len(paramValues) {
 				params[key] = paramValues[i]
@@ -411,9 +358,10 @@ func (r *Router) applyMiddlewareAndServe(w http.ResponseWriter, req *http.Reques
 }
 
 // matchRoute performs efficient trie-based route matching
-func (r *Router) matchRoute(root *node, parts []string) (Handler, []string) {
+func (r *Router) matchRoute(root *node, parts []string) (Handler, []string, []string) {
 	current := root
-	params := make([]string, 0, len(parts))
+	paramValues := make([]string, 0, len(parts))
+	paramKeys := make([]string, 0, len(parts))
 
 	for i, part := range parts {
 		// Try to find exact match first
@@ -426,7 +374,11 @@ func (r *Router) matchRoute(root *node, parts []string) (Handler, []string) {
 		// Try param match
 		paramChild := r.findParamChild(current)
 		if paramChild != nil {
-			params = append(params, part)
+			paramValues = append(paramValues, part)
+			// Extract param name from child path (e.g., ":id" -> "id")
+			if len(paramChild.path) > 1 && paramChild.path[0] == ':' {
+				paramKeys = append(paramKeys, paramChild.path[1:])
+			}
 			current = paramChild
 			continue
 		}
@@ -435,16 +387,20 @@ func (r *Router) matchRoute(root *node, parts []string) (Handler, []string) {
 		wildChild := r.findWildChild(current)
 		if wildChild != nil {
 			wildValue := strings.Join(parts[i:], "/")
-			params = append(params, wildValue)
+			paramValues = append(paramValues, wildValue)
+			// Extract wildcard name from child path (e.g., "*filepath" -> "filepath")
+			if len(wildChild.path) > 1 && wildChild.path[0] == '*' {
+				paramKeys = append(paramKeys, wildChild.path[1:])
+			}
 			current = wildChild
 			break
 		}
 
 		// No match found
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	return current.handler, params
+	return current.handler, paramValues, paramKeys
 }
 
 // findChildForPath finds a child node that matches the given path segment

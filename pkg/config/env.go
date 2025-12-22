@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -36,4 +37,63 @@ func LoadEnv(filepath string, overwrite bool) error {
 	}
 
 	return scanner.Err()
+}
+
+// GetString gets an environment variable as a string, returns default value if not found
+func GetString(key, defaultValue string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	return value
+}
+
+// GetInt gets an environment variable as an integer, returns default value if not found or invalid
+func GetInt(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+
+	intValue, err := strconv.Atoi(value)
+	if err != nil {
+		return defaultValue
+	}
+
+	return intValue
+}
+
+// GetBool gets an environment variable as a boolean, returns default value if not found or invalid
+func GetBool(key string, defaultValue bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+
+	boolValue, err := strconv.ParseBool(value)
+	if err != nil {
+		return defaultValue
+	}
+
+	return boolValue
+}
+
+// GetFloat gets an environment variable as a float, returns default value if not found or invalid
+func GetFloat(key string, defaultValue float64) float64 {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+
+	floatValue, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return defaultValue
+	}
+
+	return floatValue
+}
+
+// Set sets an environment variable
+func Set(key, value string) {
+	os.Setenv(key, value)
 }

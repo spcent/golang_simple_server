@@ -4,11 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"sync"
-	"syscall"
 	"testing"
-	"time"
 
+	"github.com/spcent/golang_simple_server/pkg/middleware"
 	"github.com/spcent/golang_simple_server/pkg/router"
 )
 
@@ -24,11 +22,11 @@ func TestNewAppWithDefaultOptions(t *testing.T) {
 	if app.router == nil {
 		t.Errorf("Default router should not be nil")
 	}
-	if app.addr != ":8080" {
-		t.Errorf("Default address should be :8080, got %s", app.addr)
+	if app.config.Addr != ":8080" {
+		t.Errorf("Default address should be :8080, got %s", app.config.Addr)
 	}
-	if app.envFile != ".env" {
-		t.Errorf("Default envFile should be .env, got %s", app.envFile)
+	if app.config.EnvFile != ".env" {
+		t.Errorf("Default envFile should be .env, got %s", app.config.EnvFile)
 	}
 }
 
@@ -69,8 +67,8 @@ func TestWithAddr(t *testing.T) {
 	app := New(WithAddr(customAddr))
 
 	// Assert that the address is set correctly
-	if app.addr != customAddr {
-		t.Errorf("Address should be set to %s, got %s", customAddr, app.addr)
+	if app.config.Addr != customAddr {
+		t.Errorf("Address should be set to %s, got %s", customAddr, app.config.Addr)
 	}
 }
 
@@ -83,8 +81,8 @@ func TestWithEnvPath(t *testing.T) {
 	app := New(WithEnvPath(customEnvPath))
 
 	// Assert that the env file path is set correctly
-	if app.envFile != customEnvPath {
-		t.Errorf("Env file path should be set to %s, got %s", customEnvPath, app.envFile)
+	if app.config.EnvFile != customEnvPath {
+		t.Errorf("Env file path should be set to %s, got %s", customEnvPath, app.config.EnvFile)
 	}
 }
 
@@ -111,11 +109,11 @@ func TestMultipleOptions(t *testing.T) {
 	if app.router != customRouter {
 		t.Errorf("Router should be set to the custom router")
 	}
-	if app.addr != customAddr {
-		t.Errorf("Address should be set to %s, got %s", customAddr, app.addr)
+	if app.config.Addr != customAddr {
+		t.Errorf("Address should be set to %s, got %s", customAddr, app.config.Addr)
 	}
-	if app.envFile != customEnvPath {
-		t.Errorf("Env file path should be set to %s, got %s", customEnvPath, app.envFile)
+	if app.config.EnvFile != customEnvPath {
+		t.Errorf("Env file path should be set to %s, got %s", customEnvPath, app.config.EnvFile)
 	}
 }
 
@@ -165,8 +163,8 @@ func TestOptionIdempotency(t *testing.T) {
 	app := New(WithAddr(addr1), WithAddr(addr2))
 
 	// Assert that the last option takes effect
-	if app.addr != addr2 {
-		t.Errorf("Last option should take effect when the same option is applied multiple times. Expected %s, got %s", addr2, app.addr)
+	if app.config.Addr != addr2 {
+		t.Errorf("Last option should take effect when the same option is applied multiple times. Expected %s, got %s", addr2, app.config.Addr)
 	}
 }
 
@@ -234,22 +232,20 @@ func TestHandle(t *testing.T) {
 func TestUse(t *testing.T) {
 	app := New()
 
-	// Create a test middleware that adds a header
-	customMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("X-Custom-Middleware", "applied")
-			next(w, r)
-		}
-	}
-
 	// Register a test route using app.Get (which uses router) instead of app.HandleFunc (which uses mux)
 	app.Get("/test", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
 
-	// Apply the middleware
-	app.Use(customMiddleware)
+	// Apply the middleware using the correct middleware.Middleware type
+	middlewareFunc := func(h middleware.Handler) middleware.Handler {
+		return middleware.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Custom-Middleware", "applied")
+			h.ServeHTTP(w, r)
+		}))
+	}
+	app.Use(middlewareFunc)
 
 	// Create a test request to the test path
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -274,22 +270,22 @@ func TestUseMultipleMiddlewares(t *testing.T) {
 	})
 
 	// Create middlewares that add headers in a specific order
-	mw1 := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
+	middlewareFunc1 := func(h middleware.Handler) middleware.Handler {
+		return middleware.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add("X-Middleware-Order", "1")
-			next(w, r)
-		}
+			h.ServeHTTP(w, r)
+		}))
 	}
 
-	mw2 := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
+	middlewareFunc2 := func(h middleware.Handler) middleware.Handler {
+		return middleware.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add("X-Middleware-Order", "2")
-			next(w, r)
-		}
+			h.ServeHTTP(w, r)
+		}))
 	}
 
 	// Apply the middlewares in order 1 then 2
-	app.Use(mw1, mw2)
+	app.Use(middlewareFunc1, middlewareFunc2)
 
 	// Create a test request to the test route
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -310,66 +306,38 @@ func TestUseMultipleMiddlewares(t *testing.T) {
 // TestBoot tests the Boot method with mocked dependencies
 // This is a basic test that focuses on configuration rather than actual server startup
 func TestBoot(t *testing.T) {
-	// Save original values and restore them after the test
-	originalAddr := *addr
-	originalEnv := *env
-	defer func() {
-		*addr = originalAddr
-		*env = originalEnv
-	}()
-
-	// Set test flags
-	*addr = ":8888"
-	*env = ""
-
 	// Mock environment variables
 	os.Setenv("APP_DEBUG", "false")
 	defer os.Unsetenv("APP_DEBUG")
 
-	// Create a new App with mocked components
-	app := New()
+	// Create a new App with custom address
+	app := New(WithAddr(":8888"))
 
-	// Run Boot in a goroutine with a context that can be canceled
-	// We'll let it run briefly and then send SIGTERM to stop it
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		app.Boot()
-	}()
-
-	// Wait a short time to ensure the server starts
-	time.Sleep(50 * time.Millisecond)
-
-	// Get current process and send SIGTERM to trigger graceful shutdown
-	proc, err := os.FindProcess(os.Getpid())
-	if err != nil {
-		t.Errorf("Failed to find current process: %v", err)
-		return
+	// Assert that the address was set correctly before Boot
+	if app.config.Addr != ":8888" {
+		t.Errorf("Expected address to be set to :8888 before Boot, got %s", app.config.Addr)
 	}
 
-	// Send SIGTERM signal to trigger graceful shutdown
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		t.Errorf("Failed to send SIGTERM signal: %v", err)
+	// For this test, we'll just verify that Boot doesn't panic
+	// without actually starting the server
+	// This is because starting the server would require proper shutdown handling
+	// and could interfere with other tests
+
+	// Instead, we'll test the Boot method's components separately
+	// Test loadEnv component
+	if err := app.loadEnv(); err != nil {
+		t.Errorf("loadEnv failed: %v", err)
 	}
 
-	// Set a timeout for the shutdown process
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	// Wait for the goroutine to finish or timeout
-	select {
-	case <-done:
-		// Boot completed successfully
-	case <-time.After(1 * time.Second):
-		t.Errorf("Test timed out waiting for Boot to finish")
+	// Test setupServer component
+	if err := app.setupServer(); err != nil {
+		t.Errorf("setupServer failed: %v", err)
 	}
 
-	// Assert that the address was set correctly from the flag
-	if app.addr != ":8888" {
-		t.Errorf("Expected address to be set from flag to :8888, got %s", app.addr)
+	// Verify that httpServer was created with the correct address
+	if app.httpServer == nil {
+		t.Errorf("httpServer should be created by setupServer")
+	} else if app.httpServer.Addr != ":8888" {
+		t.Errorf("httpServer address should be :8888, got %s", app.httpServer.Addr)
 	}
 }

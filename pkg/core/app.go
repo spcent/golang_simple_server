@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -17,29 +18,33 @@ import (
 	"github.com/spcent/golang_simple_server/pkg/router"
 )
 
-var (
-	addr      = flag.String("addr", "", "Server address to listen on")
-	env       = flag.String("env", "", "Path to .env file")
-	tlsCert   = flag.String("tls-cert", "", "Path to TLS certificate file")
-	tlsKey    = flag.String("tls-key", "", "Path to TLS private key file")
-	enableTLS = flag.Bool("tls", false, "Enable HTTPS support")
-)
+// TLSConfig defines TLS configuration
+type TLSConfig struct {
+	Enabled  bool   // Whether to enable TLS
+	CertFile string // Path to TLS certificate file
+	KeyFile  string // Path to TLS private key file
+}
 
+// AppConfig defines application configuration
+type AppConfig struct {
+	Addr    string    // Server address
+	EnvFile string    // Path to .env file
+	TLS     TLSConfig // TLS configuration
+	Debug   bool      // Debug mode
+}
+
+// App represents the main application instance
 type App struct {
-	addr      string         // bind address
-	envFile   string         // path to .env file
-	mux       *http.ServeMux // http serve mux for router
-	router    *router.Router // router for http request
-	wsHub     *ws.Hub        // WebSocket hub
-	started   bool           // Whether the app has started
-	tlsCert   string         // Path to TLS certificate file
-	tlsKey    string         // Path to TLS private key file
-	enableTLS bool           // Whether to enable TLS
+	config     AppConfig      // Application configuration
+	mux        *http.ServeMux // HTTP serve mux
+	router     *router.Router // HTTP router
+	wsHub      *ws.Hub        // WebSocket hub
+	started    bool           // Whether the app has started
+	httpServer *http.Server   // HTTP server instance
 }
 
 // Option defines a function type for configuring the App
 // It follows the functional options pattern
-
 type Option func(*App)
 
 // WithMux sets the http.ServeMux for the App
@@ -59,44 +64,32 @@ func WithRouter(router *router.Router) Option {
 // WithAddr sets the server address
 func WithAddr(address string) Option {
 	return func(a *App) {
-		a.addr = address
+		a.config.Addr = address
 	}
 }
 
 // WithEnvPath sets the path to the .env file
 func WithEnvPath(path string) Option {
 	return func(a *App) {
-		a.envFile = path
+		a.config.EnvFile = path
 	}
 }
 
-// WithTLS enables HTTPS support with the specified certificate and key files
+// WithTLS configures TLS for the app
 func WithTLS(certFile, keyFile string) Option {
 	return func(a *App) {
-		a.enableTLS = true
-		a.tlsCert = certFile
-		a.tlsKey = keyFile
+		a.config.TLS = TLSConfig{
+			Enabled:  true,
+			CertFile: certFile,
+			KeyFile:  keyFile,
+		}
 	}
 }
 
-// EnableTLS enables HTTPS support
-func EnableTLS(a *App) {
-	a.enableTLS = true
-}
-
-// WithTLSCert sets the path to the TLS certificate file
-func WithTLSCert(certFile string) Option {
+// WithTLSConfig sets the TLS configuration for the App
+func WithTLSConfig(tlsConfig TLSConfig) Option {
 	return func(a *App) {
-		a.tlsCert = certFile
-		a.enableTLS = true
-	}
-}
-
-// WithTLSKey sets the path to the TLS private key file
-func WithTLSKey(keyFile string) Option {
-	return func(a *App) {
-		a.tlsKey = keyFile
-		a.enableTLS = true
+		a.config.TLS = tlsConfig
 	}
 }
 
@@ -104,11 +97,14 @@ func WithTLSKey(keyFile string) Option {
 // Defaults are applied if no options are provided
 func New(options ...Option) *App {
 	app := &App{
-		// Set default values if needed
-		mux:     http.NewServeMux(),
-		router:  router.NewRouter(),
-		addr:    ":8080",
-		envFile: ".env",
+		config: AppConfig{
+			Addr:    ":8080",
+			EnvFile: ".env",
+			TLS:     TLSConfig{Enabled: false},
+			Debug:   false,
+		},
+		mux:    http.NewServeMux(),
+		router: router.NewRouter(),
 	}
 
 	// Apply all provided options
@@ -192,58 +188,24 @@ func (a *App) AnyHandler(path string, handler router.Handler) {
 }
 
 // Use applies middleware to all routes
-// It accepts both Middleware and FuncMiddleware types for flexibility
-func (a *App) Use(middlewares ...any) {
-	// Convert all middlewares to Middleware type
-	typedMiddlewares := make([]middleware.Middleware, 0, len(middlewares))
+func (a *App) Use(middlewares ...middleware.Middleware) {
+	chain := middleware.NewChain(middlewares...)
 
-	for _, mw := range middlewares {
-		switch v := mw.(type) {
-		case middleware.Middleware:
-			typedMiddlewares = append(typedMiddlewares, v)
-		case func(http.Handler) http.Handler:
-			// Convert http.Handler middleware to Middleware using wrapper
-			typedMiddlewares = append(typedMiddlewares, func(h middleware.Handler) middleware.Handler {
-				// Convert middleware.Handler to http.Handler
-				return middleware.Handler(v(http.Handler(h)))
-			})
-		case func(http.HandlerFunc) http.HandlerFunc:
-			// Convert old FuncMiddleware to new Middleware
-			typedMiddlewares = append(typedMiddlewares, middleware.FromFuncMiddleware(v))
-		default:
-			panic("invalid middleware type")
-		}
-	}
-
-	// Create a middleware chain
-	chain := middleware.NewChain(typedMiddlewares...)
-
-	// Create a handler that tries the router first, then the mux
 	combinedHandler := func(w http.ResponseWriter, r *http.Request) {
-		// Create a response recorder to check if the router handled the request
 		rr := &responseRecorder{ResponseWriter: w, statusCode: http.StatusNotFound}
-
-		// Try the router first
 		a.router.ServeHTTP(rr, r)
 
-		// If the router didn't handle the request (status 404), try the mux
 		if rr.statusCode == http.StatusNotFound {
-			// Use the mux's handlers directly
 			a.mux.ServeHTTP(w, r)
 		}
 	}
 
-	// Apply middleware chain to the combined handler
 	wrappedHandler := chain.ApplyFunc(combinedHandler)
-
-	// Register the wrapped handler to the root
-	// This ensures all requests go through our middleware chain
 	a.mux.HandleFunc("/", wrappedHandler)
 }
 
 // responseRecorder is a wrapper around http.ResponseWriter that records the status code
 // It's used to check if the router handled the request
-
 type responseRecorder struct {
 	http.ResponseWriter
 	statusCode int
@@ -261,52 +223,64 @@ func (a *App) Router() *router.Router {
 
 // Boot initializes and starts the application
 // It sets up the router with the mux and starts the HTTP server
-func (a *App) Boot() {
-	// Setup router with mux
+func (a *App) Boot() error {
+	// Parse command line flags
+	flag.Parse()
+
+	// Initialize logger
 	glog.Init()
 	defer glog.Flush()
 	defer glog.Close()
 
-	// Load.env file if it exists
-	if env != nil && *env != "" {
-		a.envFile = *env
-	}
-	if _, err := os.Stat(a.envFile); err == nil {
-		glog.Infof("Load .env file: %s", a.envFile)
-		err := config.LoadEnv(a.envFile, true)
-		if err != nil {
-			glog.Fatalf("Load .env failed: %v", err)
-		}
+	// Load environment variables from .env file if it exists
+	if err := a.loadEnv(); err != nil {
+		return err
 	}
 
-	// Middleware is applied through the Use() method
+	// Setup HTTP server
+	if err := a.setupServer(); err != nil {
+		return err
+	}
+
+	// Start HTTP server
+	if err := a.startServer(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+
+	return nil
+}
+
+// loadEnv loads environment variables from .env file if it exists
+func (a *App) loadEnv() error {
+	if _, err := os.Stat(a.config.EnvFile); err == nil {
+		glog.Infof("Load .env file: %s", a.config.EnvFile)
+		err := config.LoadEnv(a.config.EnvFile, true)
+		if err != nil {
+			glog.Errorf("Load .env failed: %v", err)
+			return err
+		}
+	}
+	return nil
+}
+
+// setupServer sets up the HTTP server with the configured settings
+func (a *App) setupServer() error {
+	// Print registered routes if debug mode is enabled
 	if os.Getenv("APP_DEBUG") == "true" {
 		a.router.Print(os.Stdout)
 	}
 
-	if addr != nil && *addr != "" {
-		a.addr = *addr
-	}
-
-	// Apply TLS flags if provided
-	if enableTLS != nil && *enableTLS {
-		a.enableTLS = true
-	}
-	if tlsCert != nil && *tlsCert != "" {
-		a.tlsCert = *tlsCert
-		a.enableTLS = true
-	}
-	if tlsKey != nil && *tlsKey != "" {
-		a.tlsKey = *tlsKey
-		a.enableTLS = true
-	}
-
-	server := &http.Server{
-		Addr:    a.addr,
+	// Create HTTP server instance
+	a.httpServer = &http.Server{
+		Addr:    a.config.Addr,
 		Handler: a.mux,
 	}
 
-	// Mark app as started
+	return nil
+}
+
+// startServer starts the HTTP server and handles graceful shutdown
+func (a *App) startServer() error {
 	a.started = true
 
 	// Shutdown the server gracefully when SIGTERM is received
@@ -321,26 +295,24 @@ func (a *App) Boot() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		if err := server.Shutdown(ctx); err != nil {
+		if err := a.httpServer.Shutdown(ctx); err != nil {
 			glog.Errorf("Server shutdown error: %v", err)
 		}
 		close(idleConnsClosed)
 	}()
 
-	glog.Infof("Server running on %s", a.addr)
+	glog.Infof("Server running on %s", a.config.Addr)
+
 	var err error
-	if a.enableTLS {
-		if a.tlsCert == "" || a.tlsKey == "" {
-			glog.Fatal("TLS enabled but certificate or key file not provided")
-			return
+	if a.config.TLS.Enabled {
+		if a.config.TLS.CertFile == "" || a.config.TLS.KeyFile == "" {
+			glog.Errorf("TLS enabled but certificate or key file not provided")
+			return fmt.Errorf("TLS enabled but certificate or key file not provided")
 		}
-		glog.Infof("HTTPS enabled, using certificate: %s", a.tlsCert)
-		err = server.ListenAndServeTLS(a.tlsCert, a.tlsKey)
+		glog.Infof("HTTPS enabled, using certificate: %s", a.config.TLS.CertFile)
+		err = a.httpServer.ListenAndServeTLS(a.config.TLS.CertFile, a.config.TLS.KeyFile)
 	} else {
-		err = server.ListenAndServe()
-	}
-	if err != http.ErrServerClosed {
-		glog.Errorf("Server error: %v", err)
+		err = a.httpServer.ListenAndServe()
 	}
 
 	<-idleConnsClosed
@@ -353,6 +325,7 @@ func (a *App) Boot() {
 	}
 
 	glog.Info("Server stopped gracefully")
+	return err
 }
 
 // WebSocketConfig defines the configuration for WebSocket
@@ -369,13 +342,19 @@ type WebSocketConfig struct {
 
 // DefaultWebSocketConfig returns default WebSocket configuration
 func DefaultWebSocketConfig() WebSocketConfig {
+	// Get secret from environment variable or use default (for development only)
+	secret := []byte(os.Getenv("WS_SECRET"))
+	if len(secret) == 0 {
+		secret = []byte("change-this-secret")
+	}
+
 	return WebSocketConfig{
 		WorkerCount:   16,
 		JobQueueSize:  4096,
 		SendQueueSize: 256,
 		SendTimeout:   200 * time.Millisecond,
 		SendBehavior:  ws.SendBlock,
-		Secret:        []byte("change-this-secret"),
+		Secret:        secret,
 		WSRoutePath:   "/ws",
 		BroadcastPath: "/_admin/broadcast",
 	}
@@ -438,10 +417,16 @@ func (a *App) EnableRateLimit(rate float64, capacity int) {
 
 // EnableCORS enables the CORS middleware
 func (a *App) EnableCORS() {
-	a.Use(middleware.CORS)
+	// Convert CORS middleware from func(http.Handler) http.Handler to middleware.Middleware
+	a.Use(func(h middleware.Handler) middleware.Handler {
+		return middleware.Handler(middleware.CORS(http.Handler(h)))
+	})
 }
 
 // EnableRecovery enables the recovery middleware
 func (a *App) EnableRecovery() {
-	a.Use(middleware.RecoveryMiddleware)
+	// Convert http.Handler middleware to Middleware type
+	a.Use(func(h middleware.Handler) middleware.Handler {
+		return middleware.Handler(middleware.RecoveryMiddleware(http.Handler(h)))
+	})
 }
