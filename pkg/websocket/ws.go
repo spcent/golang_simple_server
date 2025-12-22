@@ -27,6 +27,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -60,6 +62,15 @@ type Outbound struct {
 	Data []byte
 }
 
+// UserInfo stores authenticated user information
+type UserInfo struct {
+	ID     string                 `json:"id"`
+	Name   string                 `json:"name"`
+	Email  string                 `json:"email"`
+	Roles  []string               `json:"roles"`
+	Claims map[string]interface{} `json:"claims"`
+}
+
 // Conn is a websocket connection wrapper with stream API and bounded queue send.
 type Conn struct {
 	conn net.Conn
@@ -83,6 +94,9 @@ type Conn struct {
 	pingPeriod time.Duration
 	pongWait   time.Duration
 	lastPong   int64
+
+	// User information (set after authentication)
+	UserInfo *UserInfo
 }
 
 // NewConn creates a Conn after handshake
@@ -627,7 +641,7 @@ func (h *Hub) BroadcastAll(op byte, data []byte) {
 
 // simpleRoomAuth stores metadata about rooms (password)
 type simpleRoomAuth struct {
-	roomPasswords map[string]string // room -> password (plaintext for demo)
+	roomPasswords map[string]string // room -> password (bcrypt hashed)
 	mu            sync.RWMutex
 	jwtSecret     []byte // HMAC secret for HS256
 }
@@ -641,13 +655,21 @@ func NewSimpleRoomAuth(secret []byte) *simpleRoomAuth {
 func (s *simpleRoomAuth) SetRoomPassword(room, pwd string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.roomPasswords[room] = pwd
+	// Hash password before storing
+	hashed, err := bcrypt.GenerateFromPassword([]byte(pwd), bcrypt.DefaultCost)
+	if err != nil {
+		log.Printf("Error hashing room password: %v", err)
+		return
+	}
+	s.roomPasswords[room] = string(hashed)
 }
 func (s *simpleRoomAuth) CheckRoomPassword(room, provided string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if p, ok := s.roomPasswords[room]; ok {
-		return p == provided
+	if hashed, ok := s.roomPasswords[room]; ok {
+		// Verify bcrypt hash
+		err := bcrypt.CompareHashAndPassword([]byte(hashed), []byte(provided))
+		return err == nil
 	}
 	// no password set => allowed
 	return true
@@ -737,15 +759,34 @@ func ServeWSWithAuth(w http.ResponseWriter, r *http.Request, hub *Hub, auth *sim
 	}
 	// check token if present
 	token := ""
+	var userInfo *UserInfo
 	if ah := r.Header.Get("Authorization"); ah != "" && strings.HasPrefix(strings.ToLower(ah), "bearer ") {
 		token = strings.TrimSpace(ah[len("bearer "):])
 	} else if t := r.URL.Query().Get("token"); t != "" {
 		token = t
 	}
 	if token != "" {
-		if _, err := auth.VerifyJWT(token); err != nil {
+		payload, err := auth.VerifyJWT(token)
+		if err != nil {
 			http.Error(w, "forbidden: invalid token", http.StatusForbidden)
 			return
+		}
+		// Extract user information from JWT payload
+		userInfo = &UserInfo{
+			Claims: payload,
+		}
+		// Extract common claims if present
+		if id, ok := payload["sub"].(string); ok {
+			userInfo.ID = id
+		}
+		if name, ok := payload["name"].(string); ok {
+			userInfo.Name = name
+		}
+		if email, ok := payload["email"].(string); ok {
+			userInfo.Email = email
+		}
+		if roles, ok := payload["roles"].([]string); ok {
+			userInfo.Roles = roles
 		}
 	}
 	accept := computeAcceptKey(key)
@@ -774,6 +815,8 @@ func ServeWSWithAuth(w http.ResponseWriter, r *http.Request, hub *Hub, auth *sim
 	}
 
 	c := NewConn(conn, queueSize, sendTimeout, behavior)
+	// Set user information if authenticated
+	c.UserInfo = userInfo
 	// override br/bw with hijacked conn
 	c.br = bufio.NewReaderSize(conn, 8192)
 	c.bw = bufio.NewWriterSize(conn, 8192)

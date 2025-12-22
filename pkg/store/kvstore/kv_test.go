@@ -36,8 +36,8 @@ func createTestStore(t *testing.T) (*KVStore, func()) {
 
 	opts := Options{
 		DataDir:       dataDir,
-		MaxEntries:    1000,
-		MaxMemoryMB:   10,
+		MaxEntries:    100000, // Increased from 1000 to 100000 to reduce evict frequency
+		MaxMemoryMB:   100,     // Increased from 10 to 100 to reduce evict frequency
 		FlushInterval: 10 * time.Millisecond,
 		CleanInterval: 100 * time.Millisecond,
 		ShardCount:    4,

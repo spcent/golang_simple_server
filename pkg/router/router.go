@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/spcent/golang_simple_server/pkg/middleware"
 )
 
 const (
@@ -18,13 +20,28 @@ const (
 	ANY    = "ANY"
 )
 
-// Handler defines the function signature for handling HTTP requests.
+// Handler defines the function signature for handling HTTP requests with route parameters.
 type Handler func(http.ResponseWriter, *http.Request, map[string]string)
+
+// HTTPHandlerAdapter adapts a standard http.Handler to the router Handler type
+func HTTPHandlerAdapter(h http.Handler) Handler {
+	return func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+		h.ServeHTTP(w, r)
+	}
+}
+
+// HTTPHandlerFuncAdapter adapts a standard http.HandlerFunc to the router Handler type
+func HTTPHandlerFuncAdapter(h http.HandlerFunc) Handler {
+	return func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+		h(w, r)
+	}
+}
 
 type RouteRegistrar interface {
 	Register(r *Router)
 }
 
+// segment represents a path segment with type information
 type segment struct {
 	raw       string
 	isParam   bool
@@ -32,14 +49,16 @@ type segment struct {
 	paramName string
 }
 
+// node represents a node in the prefix trie
 type node struct {
-	segment    string
-	children   map[string]*node
-	paramChild *node
-	wildChild  *node
-	paramName  string
-	handler    Handler
-	paramKeys  []string
+	path      string   // path segment
+	fullPath  string   // full path for this node (only set for nodes with handlers)
+	wildChild *node    // wildcard child node
+	indices   string   // string of child path starts (optimized for lookup)
+	children  []*node  // child nodes
+	handler   Handler  // handler for this node
+	paramKeys []string // parameter keys for this node
+	priority  int      // priority for this node (higher = more specific)
 }
 
 type route struct {
@@ -48,17 +67,23 @@ type route struct {
 }
 
 type Router struct {
-	trees      map[string]*node
-	registrars []RouteRegistrar
-	routes     map[string][]route
-	frozen     bool
-	mu         sync.RWMutex
+	prefix      string                  // Group prefix
+	trees       map[string]*node        // Method -> root node
+	registrars  []RouteRegistrar        // Route registrars
+	routes      map[string][]route      // Registered routes
+	frozen      bool                    // Whether router is frozen
+	mu          sync.RWMutex            // Mutex for concurrent access
+	parent      *Router                 // Parent router for groups
+	middlewares []middleware.Middleware // Group-level middlewares
 }
 
 func NewRouter() *Router {
 	return &Router{
-		trees:  make(map[string]*node),
-		routes: make(map[string][]route),
+		trees:       make(map[string]*node),
+		routes:      make(map[string][]route),
+		prefix:      "",
+		parent:      nil,
+		middlewares: []middleware.Middleware{},
 	}
 }
 
@@ -69,29 +94,58 @@ func (r *Router) Freeze() {
 }
 
 func (r *Router) Register(registrars ...RouteRegistrar) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	// Get unique registrars without holding the lock
+	// This prevents deadlock when reg.Register(r) calls back into AddRoute
+	var newRegistrars []RouteRegistrar
 
+	r.mu.RLock()
 	seen := make(map[RouteRegistrar]bool)
 	for _, reg := range r.registrars {
 		seen[reg] = true
 	}
+	r.mu.RUnlock()
+
+	// Find new registrars
 	for _, reg := range registrars {
 		if !seen[reg] {
-			r.registrars = append(r.registrars, reg)
-			reg.Register(r)
+			newRegistrars = append(newRegistrars, reg)
+			seen[reg] = true
 		}
 	}
-}
 
-func (r *Router) Group(prefix string) *Router {
-	return &Router{
-		trees:  r.trees,
-		routes: r.routes,
-		frozen: r.frozen,
+	// Register new registrars
+	for _, reg := range newRegistrars {
+		// Add to registrars list
+		r.mu.Lock()
+		r.registrars = append(r.registrars, reg)
+		r.mu.Unlock()
+
+		// Call Register without holding the lock
+		// This allows reg.Register(r) to call AddRoute safely
+		reg.Register(r)
 	}
 }
 
+// Group creates a new route group with the given prefix and inherits parent middlewares
+func (r *Router) Group(prefix string) *Router {
+	// Create full prefix by combining with parent's prefix
+	fullPrefix := r.prefix + prefix
+
+	// Inherit middlewares from parent
+	inheritedMiddlewares := make([]middleware.Middleware, len(r.middlewares))
+	copy(inheritedMiddlewares, r.middlewares)
+
+	return &Router{
+		prefix:      fullPrefix,
+		trees:       r.trees,
+		routes:      r.routes,
+		frozen:      r.frozen,
+		parent:      r,
+		middlewares: inheritedMiddlewares,
+	}
+}
+
+// AddRoute adds a route to the router with the given method, path and handler
 func (r *Router) AddRoute(method, path string, handler Handler) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -100,66 +154,132 @@ func (r *Router) AddRoute(method, path string, handler Handler) {
 		panic("router is frozen, cannot add route after freeze")
 	}
 
-	fullPath := strings.TrimRight(path, "/")
+	// Combine with group prefix
+	fullPath := r.prefix + strings.TrimRight(path, "/")
 	if fullPath == "" {
 		fullPath = "/"
 	}
 
 	if r.trees[method] == nil {
-		r.trees[method] = &node{children: make(map[string]*node)}
+		r.trees[method] = &node{}
+	}
+
+	current := r.trees[method]
+	current.priority++
+
+	// Start with root path
+	if fullPath == "/" {
+		if current.handler != nil {
+			panic("duplicate route registration: " + method + " /")
+		}
+		current.handler = handler
+		current.fullPath = fullPath
+		r.routes[method] = append(r.routes[method], route{Method: method, Path: fullPath})
+		return
 	}
 
 	segments := compileTemplate(fullPath)
-	current := r.trees[method]
-	var paramKeys []string
+	paramKeys := make([]string, 0, len(segments))
 
-	for i, seg := range segments {
-		switch {
-		case seg.isWild:
-			if i != len(segments)-1 {
-				panic("wildcard must be the last segment: " + fullPath)
-			}
-			if current.wildChild != nil {
-				panic("duplicate wildcard route: " + fullPath)
-			}
-			current.wildChild = &node{segment: seg.raw, paramName: seg.paramName}
+	// Add each segment to the trie
+	for _, seg := range segments {
+		// Get segment value
+		segValue := seg.raw
+		if seg.isParam {
+			segValue = ":"
 			paramKeys = append(paramKeys, seg.paramName)
-			current = current.wildChild
-
-		case seg.isParam:
-			if current.paramChild != nil && current.paramChild.paramName != seg.paramName {
-				panic("conflicting param route at: " + seg.raw)
-			}
-			if current.paramChild == nil {
-				current.paramChild = &node{
-					segment:   seg.raw,
-					children:  make(map[string]*node),
-					paramName: seg.paramName,
-				}
-			}
+		} else if seg.isWild {
+			segValue = "*"
 			paramKeys = append(paramKeys, seg.paramName)
-			current = current.paramChild
-
-		default:
-			child, ok := current.children[seg.raw]
-			if !ok {
-				child = &node{
-					segment:  seg.raw,
-					children: make(map[string]*node),
-				}
-				current.children[seg.raw] = child
-			}
-			current = child
 		}
+
+		// Find or create child node
+		child := r.findChild(current, segValue)
+		if child == nil {
+			child = &node{
+				path: segValue,
+			}
+			r.insertChild(current, child)
+		}
+
+		current = child
+		current.priority++
 	}
 
+	// Set handler for the final node
 	if current.handler != nil {
 		panic("duplicate route registration: " + method + " " + fullPath)
 	}
 	current.handler = handler
 	current.paramKeys = paramKeys
+	current.fullPath = fullPath
 
 	r.routes[method] = append(r.routes[method], route{Method: method, Path: fullPath})
+}
+
+// Use adds middlewares to the router group
+func (r *Router) Use(middlewares ...middleware.Middleware) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Add middlewares to the group
+	r.middlewares = append(r.middlewares, middlewares...)
+}
+
+// findChild finds a child node with the given path segment
+func (r *Router) findChild(parent *node, path string) *node {
+	// Check if it's a wildcard segment
+	if len(path) == 1 {
+		switch path {
+		case ":":
+			// Check for param child
+			for _, child := range parent.children {
+				if len(child.path) > 0 && child.path[0] == ':' {
+					return child
+				}
+			}
+		case "*":
+			// Check for wild child
+			for _, child := range parent.children {
+				if len(child.path) > 0 && child.path[0] == '*' {
+					return child
+				}
+			}
+		default:
+			// Check for exact match
+			for _, child := range parent.children {
+				if child.path == path {
+					return child
+				}
+			}
+		}
+	} else {
+		// Check for exact match for longer paths
+		for _, child := range parent.children {
+			if child.path == path {
+				return child
+			}
+		}
+	}
+
+	return nil
+}
+
+// insertChild inserts a child node into the parent's children list
+func (r *Router) insertChild(parent *node, child *node) {
+	// Find insertion point to keep indices sorted
+	var i int
+	for i = 0; i < len(parent.indices); i++ {
+		if parent.indices[i] > child.path[0] {
+			break
+		}
+	}
+
+	// Insert index
+	parent.indices = parent.indices[:i] + string(child.path[0]) + parent.indices[i:]
+
+	// Insert child
+	parent.children = append(parent.children[:i], append([]*node{child}, parent.children[i:]...)...)
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -180,39 +300,159 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if path != "/" {
 		path = strings.Trim(path, "/")
 	}
-	parts := []string{}
-	if path != "/" && path != "" {
-		parts = strings.Split(path, "/")
-	}
 
-	params := make(map[string]string)
-	current := tree
-
-	for i, part := range parts {
-		if child, ok := current.children[part]; ok {
-			current = child
-			continue
-		}
-		if current.paramChild != nil {
-			params[current.paramChild.paramName] = part
-			current = current.paramChild
-			continue
-		}
-		if current.wildChild != nil {
-			params[current.wildChild.paramName] = strings.Join(parts[i:], "/")
-			current = current.wildChild
-			break
+	// Handle root path specially
+	if path == "/" || path == "" {
+		if tree.handler != nil {
+			tree.handler(w, req, nil)
+			return
 		}
 		http.NotFound(w, req)
 		return
 	}
 
-	if current.handler != nil {
-		current.handler(w, req, params)
+	parts := strings.Split(path, "/")
+	params := make(map[string]string)
+
+	// Perform trie-based route matching
+	handler, paramValues := r.matchRoute(tree, parts)
+	if handler == nil {
+		http.NotFound(w, req)
 		return
 	}
 
-	http.NotFound(w, req)
+	// Set parameter values
+	if len(paramValues) > 0 {
+		current := tree
+		paramKeys := make([]string, 0, len(paramValues))
+
+		// Reconstruct paramKeys by traversing the tree again
+		for i, part := range parts {
+			// Try exact match first
+			child := r.findChildForPath(current, part)
+
+			// If no exact match, try param or wildcard match
+			if child == nil {
+				paramChild := r.findParamChild(current)
+				if paramChild != nil {
+					child = paramChild
+				} else {
+					wildChild := r.findWildChild(current)
+					if wildChild != nil {
+						child = wildChild
+					} else {
+						break
+					}
+				}
+			}
+
+			// Check if this is a param or wildcard segment
+			if len(child.path) > 0 {
+				switch child.path[0] {
+				case ':':
+					// This is a param segment, extract param name from original route
+					for _, route := range r.routes[method] {
+						routeParts := compileTemplate(route.Path)
+						if len(routeParts) == len(parts) {
+							if routeParts[i].isParam {
+								paramKeys = append(paramKeys, routeParts[i].paramName)
+								break
+							}
+						}
+					}
+				case '*':
+					// This is a wildcard segment, extract param name from original route
+					for _, route := range r.routes[method] {
+						routeParts := compileTemplate(route.Path)
+						if len(routeParts) > 0 && routeParts[len(routeParts)-1].isWild {
+							paramKeys = append(paramKeys, routeParts[len(routeParts)-1].paramName)
+							break
+						}
+					}
+					break
+				}
+			}
+
+			current = child
+		}
+
+		// Assign param values
+		for i, key := range paramKeys {
+			if i < len(paramValues) {
+				params[key] = paramValues[i]
+			}
+		}
+	}
+
+	handler(w, req, params)
+}
+
+// matchRoute performs efficient trie-based route matching
+func (r *Router) matchRoute(root *node, parts []string) (Handler, []string) {
+	current := root
+	params := make([]string, 0, len(parts))
+
+	for i, part := range parts {
+		// Try to find exact match first
+		child := r.findChildForPath(current, part)
+		if child != nil {
+			current = child
+			continue
+		}
+
+		// Try param match
+		paramChild := r.findParamChild(current)
+		if paramChild != nil {
+			params = append(params, part)
+			current = paramChild
+			continue
+		}
+
+		// Try wildcard match
+		wildChild := r.findWildChild(current)
+		if wildChild != nil {
+			wildValue := strings.Join(parts[i:], "/")
+			params = append(params, wildValue)
+			current = wildChild
+			break
+		}
+
+		// No match found
+		return nil, nil
+	}
+
+	return current.handler, params
+}
+
+// findChildForPath finds a child node that matches the given path segment
+func (r *Router) findChildForPath(parent *node, path string) *node {
+	// Check exact match first
+	for _, child := range parent.children {
+		if child.path == path {
+			return child
+		}
+	}
+	return nil
+}
+
+// findParamChild finds a param child node if exists
+func (r *Router) findParamChild(parent *node) *node {
+	for _, child := range parent.children {
+		if len(child.path) > 0 && child.path[0] == ':' {
+			return child
+		}
+	}
+	return nil
+}
+
+// findWildChild finds a wildcard child node if exists
+func (r *Router) findWildChild(parent *node) *node {
+	for _, child := range parent.children {
+		if len(child.path) > 0 && child.path[0] == '*' {
+			return child
+		}
+	}
+	return nil
 }
 
 func compileTemplate(path string) []segment {
@@ -249,6 +489,46 @@ func (r *Router) Put(path string, h Handler)    { r.AddRoute(PUT, path, h) }
 func (r *Router) Delete(path string, h Handler) { r.AddRoute(DELETE, path, h) }
 func (r *Router) Patch(path string, h Handler)  { r.AddRoute(PATCH, path, h) }
 func (r *Router) Any(path string, h Handler)    { r.AddRoute(ANY, path, h) }
+
+// HandleFunc registers a standard http.HandlerFunc for the given path and method
+func (r *Router) HandleFunc(method, path string, h http.HandlerFunc) {
+	r.AddRoute(method, path, HTTPHandlerFuncAdapter(h))
+}
+
+// Handle registers a standard http.Handler for the given path and method
+func (r *Router) Handle(method, path string, h http.Handler) {
+	r.AddRoute(method, path, HTTPHandlerAdapter(h))
+}
+
+// GetFunc registers a GET route with a standard http.HandlerFunc
+func (r *Router) GetFunc(path string, h http.HandlerFunc) {
+	r.HandleFunc(GET, path, h)
+}
+
+// PostFunc registers a POST route with a standard http.HandlerFunc
+func (r *Router) PostFunc(path string, h http.HandlerFunc) {
+	r.HandleFunc(POST, path, h)
+}
+
+// PutFunc registers a PUT route with a standard http.HandlerFunc
+func (r *Router) PutFunc(path string, h http.HandlerFunc) {
+	r.HandleFunc(PUT, path, h)
+}
+
+// DeleteFunc registers a DELETE route with a standard http.HandlerFunc
+func (r *Router) DeleteFunc(path string, h http.HandlerFunc) {
+	r.HandleFunc(DELETE, path, h)
+}
+
+// PatchFunc registers a PATCH route with a standard http.HandlerFunc
+func (r *Router) PatchFunc(path string, h http.HandlerFunc) {
+	r.HandleFunc(PATCH, path, h)
+}
+
+// AnyFunc registers a route for any HTTP method with a standard http.HandlerFunc
+func (r *Router) AnyFunc(path string, h http.HandlerFunc) {
+	r.HandleFunc(ANY, path, h)
+}
 
 // Resource REST-style routes
 func (r *Router) Resource(path string, c ResourceController) {

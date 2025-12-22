@@ -481,31 +481,60 @@ func (kv *KVStore) Get(key string) ([]byte, error) {
 	}
 
 	shard := kv.getShard(key)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-
+	
+	// First, try with read lock for non-modifying operations
+	shard.mu.RLock()
 	entry, exists := shard.data[key]
+	
+	// Check if key exists and is not expired
 	if !exists {
+		shard.mu.RUnlock()
 		atomic.AddInt64(&kv.misses, 1)
 		return nil, ErrKeyNotFound
 	}
-
-	// Check expiration
-	if !entry.ExpireAt.IsZero() && time.Now().After(entry.ExpireAt) {
-		kv.deleteFromShard(shard, key, entry)
-		if !kv.opts.ReadOnly {
-			kv.logDelete(key)
+	
+	// Check expiration (read-only check first)
+	isExpired := !entry.ExpireAt.IsZero() && time.Now().After(entry.ExpireAt)
+	if isExpired {
+		shard.mu.RUnlock()
+		// Need write lock to delete expired entry
+		shard.mu.Lock()
+		// Recheck existence and expiration under write lock
+		if entry, exists := shard.data[key]; exists {
+			if !entry.ExpireAt.IsZero() && time.Now().After(entry.ExpireAt) {
+				kv.deleteFromShard(shard, key, entry)
+				if !kv.opts.ReadOnly {
+					kv.logDelete(key)
+				}
+			}
 		}
+		shard.mu.Unlock()
 		atomic.AddInt64(&kv.misses, 1)
 		return nil, ErrKeyExpired
 	}
-
-	// Move to front (LRU)
-	kv.moveToFront(shard, entry)
+	
+	// For LRU update, we need write lock
+	// Create defensive copy first under read lock
+	valueCopy := append([]byte(nil), entry.Value...)
+	shard.mu.RUnlock()
+	
+	// Acquire write lock for LRU update
+	shard.mu.Lock()
+	// Recheck existence (could have been deleted by another goroutine)
+	if entry, exists := shard.data[key]; exists {
+		// Recheck expiration
+		if !entry.ExpireAt.IsZero() && time.Now().After(entry.ExpireAt) {
+			shard.mu.Unlock()
+			atomic.AddInt64(&kv.misses, 1)
+			return nil, ErrKeyExpired
+		}
+		// Move to front (LRU)
+		kv.moveToFront(shard, entry)
+	}
+	shard.mu.Unlock()
+	
 	atomic.AddInt64(&kv.hits, 1)
-
-	// Return defensive copy
-	return append([]byte(nil), entry.Value...), nil
+	return valueCopy, nil
 }
 
 func (kv *KVStore) Delete(key string) error {

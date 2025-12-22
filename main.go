@@ -9,35 +9,39 @@ import (
 
 func main() {
 	// Create a new app with default configuration
+	// For HTTPS support, use WithTLS option or command line flags
+	// Example: app := foundation.New(foundation.WithTLS("./cert.pem", "./key.pem"))
 	app := foundation.New()
 
-	// Register routes directly on the app
-	app.HandleFunc("/ping", pingHandler)
-	app.HandleFunc("/hello", helloHandler)
+	// Register routes directly on the app using the new API
+	app.Get("/ping", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"message":"pong"}`))
+	})
 
-	hub := app.ConfigureWebSocket()
-	defer hub.Stop()
+	app.Get("/hello", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"message":"Hello, World!"}`))
+	})
 
-	// Get the router and register routes
+	// Configure WebSocket with custom secret for JWT authentication
+	// app.ConfigureWebSocketWithOptions(foundation.WebSocketConfig{
+	// 	Secret: []byte("your-secure-jwt-secret"),
+	// })
+	app.ConfigureWebSocket()
+
+	// Register routes via handlers package
 	handlers.RegisterRoutes(app.Router())
 
 	// Apply middleware
-	app.Use(app.Logging())
+	app.Use(
+		app.Logging(),
+		// Add rate limiting: 10 requests per second with burst up to 20
+		app.RateLimit(10, 20),
+	)
 
 	// Boot the application
+	// HTTPS can also be enabled via command line flags:
+	// ./simple -tls -tls-cert ./cert.pem -tls-key ./key.pem
 	app.Boot()
-}
-
-func pingHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`pong`))
-}
-
-func helloHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/hello" {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"message":"Hello, World!"}`))
 }

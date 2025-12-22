@@ -242,11 +242,17 @@ func TestUse(t *testing.T) {
 		}
 	}
 
+	// Register a test route using app.Get (which uses router) instead of app.HandleFunc (which uses mux)
+	app.Get("/test", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
 	// Apply the middleware
 	app.Use(customMiddleware)
 
-	// Create a test request to the root path (since Use registers middleware for "/")
-	req := httptest.NewRequest("GET", "/", nil)
+	// Create a test request to the test path
+	req := httptest.NewRequest("GET", "/test", nil)
 	w := httptest.NewRecorder()
 
 	// Serve the request
@@ -261,6 +267,11 @@ func TestUse(t *testing.T) {
 // TestUseMultipleMiddlewares tests that multiple middlewares are applied in the correct order
 func TestUseMultipleMiddlewares(t *testing.T) {
 	app := New()
+
+	// Add a test route to avoid infinite recursion
+	app.Get("/test", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 
 	// Create middlewares that add headers in a specific order
 	mw1 := func(next http.HandlerFunc) http.HandlerFunc {
@@ -280,8 +291,8 @@ func TestUseMultipleMiddlewares(t *testing.T) {
 	// Apply the middlewares in order 1 then 2
 	app.Use(mw1, mw2)
 
-	// Create a test request
-	req := httptest.NewRequest("GET", "/", nil)
+	// Create a test request to the test route
+	req := httptest.NewRequest("GET", "/test", nil)
 	w := httptest.NewRecorder()
 
 	// Serve the request
