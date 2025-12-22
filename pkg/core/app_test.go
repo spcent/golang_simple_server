@@ -1,4 +1,4 @@
-package foundation
+package core
 
 import (
 	"net/http"

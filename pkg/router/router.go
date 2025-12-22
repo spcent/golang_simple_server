@@ -303,7 +303,8 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Handle root path specially
 	if path == "/" || path == "" {
 		if tree.handler != nil {
-			tree.handler(w, req, nil)
+			// Apply middleware and serve request for root path
+			r.applyMiddlewareAndServe(w, req, nil, tree.handler)
 			return
 		}
 		http.NotFound(w, req)
@@ -382,7 +383,31 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	handler(w, req, params)
+	// Apply middleware and serve request
+	r.applyMiddlewareAndServe(w, req, params, handler)
+}
+
+// applyMiddlewareAndServe applies middleware chain to the handler and serves the request
+func (r *Router) applyMiddlewareAndServe(w http.ResponseWriter, req *http.Request, params map[string]string, handler Handler) {
+	// If no middlewares, just call the handler directly
+	if len(r.middlewares) == 0 {
+		handler(w, req, params)
+		return
+	}
+
+	// Create a middleware chain
+	chain := middleware.NewChain(r.middlewares...)
+
+	// Create a http.Handler adapter that preserves route params
+	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler(w, r, params)
+	})
+
+	// Apply middleware chain
+	wrappedHandler := chain.Apply(httpHandler)
+
+	// Call the wrapped handler
+	wrappedHandler.ServeHTTP(w, req)
 }
 
 // matchRoute performs efficient trie-based route matching

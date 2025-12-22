@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/spcent/golang_simple_server/pkg/foundation"
+	"github.com/spcent/golang_simple_server/pkg/core"
 )
 
 func main() {
 	// Create a new app with default configuration
-	app := foundation.New()
+	app := core.New()
 
 	// Example 1: Use original http.HandlerFunc (direct route)
 	app.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {

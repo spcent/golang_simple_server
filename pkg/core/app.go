@@ -1,4 +1,4 @@
-package foundation
+package core
 
 import (
 	"context"
@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/spcent/golang_simple_server/pkg/config"
-	"github.com/spcent/golang_simple_server/pkg/glog"
+	glog "github.com/spcent/golang_simple_server/pkg/log"
 	"github.com/spcent/golang_simple_server/pkg/middleware"
+	ws "github.com/spcent/golang_simple_server/pkg/net/websocket"
 	"github.com/spcent/golang_simple_server/pkg/router"
-	ws "github.com/spcent/golang_simple_server/pkg/websocket"
 )
 
 var (
@@ -192,7 +192,7 @@ func (a *App) AnyHandler(path string, handler router.Handler) {
 }
 
 // Use applies middleware to all routes
-// It accepts both Middleware and FuncMiddleware types for backward compatibility
+// It accepts both Middleware and FuncMiddleware types for flexibility
 func (a *App) Use(middlewares ...any) {
 	// Convert all middlewares to Middleware type
 	typedMiddlewares := make([]middleware.Middleware, 0, len(middlewares))
@@ -201,6 +201,12 @@ func (a *App) Use(middlewares ...any) {
 		switch v := mw.(type) {
 		case middleware.Middleware:
 			typedMiddlewares = append(typedMiddlewares, v)
+		case func(http.Handler) http.Handler:
+			// Convert http.Handler middleware to Middleware using wrapper
+			typedMiddlewares = append(typedMiddlewares, func(h middleware.Handler) middleware.Handler {
+				// Convert middleware.Handler to http.Handler
+				return middleware.Handler(v(http.Handler(h)))
+			})
 		case func(http.HandlerFunc) http.HandlerFunc:
 			// Convert old FuncMiddleware to new Middleware
 			typedMiddlewares = append(typedMiddlewares, middleware.FromFuncMiddleware(v))
@@ -350,7 +356,6 @@ func (a *App) Boot() {
 }
 
 // WebSocketConfig defines the configuration for WebSocket
-// WebSocket配置选项
 type WebSocketConfig struct {
 	WorkerCount   int             // Number of worker goroutines
 	JobQueueSize  int             // Size of the job queue
@@ -363,7 +368,6 @@ type WebSocketConfig struct {
 }
 
 // DefaultWebSocketConfig returns default WebSocket configuration
-// 默认WebSocket配置
 func DefaultWebSocketConfig() WebSocketConfig {
 	return WebSocketConfig{
 		WorkerCount:   16,
@@ -379,13 +383,11 @@ func DefaultWebSocketConfig() WebSocketConfig {
 
 // ConfigureWebSocket configures WebSocket support for the app
 // It returns the Hub for advanced usage
-// 配置WebSocket支持，返回Hub用于高级操作
 func (a *App) ConfigureWebSocket() *ws.Hub {
 	return a.ConfigureWebSocketWithOptions(DefaultWebSocketConfig())
 }
 
 // ConfigureWebSocketWithOptions configures WebSocket support with custom options
-// 配置WebSocket支持（自定义选项）
 func (a *App) ConfigureWebSocketWithOptions(config WebSocketConfig) *ws.Hub {
 	// Create hub and auth
 	hub := ws.NewHub(config.WorkerCount, config.JobQueueSize)
@@ -432,4 +434,14 @@ func (a *App) EnableAuth() {
 // capacity: maximum burst size
 func (a *App) EnableRateLimit(rate float64, capacity int) {
 	a.Use(middleware.RateLimit(rate, capacity, time.Minute, 5*time.Minute))
+}
+
+// EnableCORS enables the CORS middleware
+func (a *App) EnableCORS() {
+	a.Use(middleware.CORS)
+}
+
+// EnableRecovery enables the recovery middleware
+func (a *App) EnableRecovery() {
+	a.Use(middleware.RecoveryMiddleware)
 }

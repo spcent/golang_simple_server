@@ -4,14 +4,14 @@ import (
 	"net/http"
 
 	"github.com/spcent/golang_simple_server/handlers"
-	"github.com/spcent/golang_simple_server/pkg/foundation"
+	"github.com/spcent/golang_simple_server/pkg/core"
 )
 
 func main() {
 	// Create a new app with default configuration
 	// For HTTPS support, use WithTLS option or command line flags
-	// Example: app := foundation.New(foundation.WithTLS("./cert.pem", "./key.pem"))
-	app := foundation.New()
+	// Example: app := core.New(core.WithTLS("./cert.pem", "./key.pem"))
+	app := core.New()
 
 	// Register routes directly on the app using the new API
 	app.Get("/ping", func(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +25,7 @@ func main() {
 	})
 
 	// Configure WebSocket with custom secret for JWT authentication
-	// app.ConfigureWebSocketWithOptions(foundation.WebSocketConfig{
+	// app.ConfigureWebSocketWithOptions(core.WebSocketConfig{
 	// 	Secret: []byte("your-secure-jwt-secret"),
 	// })
 	app.ConfigureWebSocket()
