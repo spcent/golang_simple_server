@@ -52,6 +52,26 @@ func (m *mockController) Patch(w http.ResponseWriter, r *http.Request, params ma
 	w.WriteHeader(http.StatusOK)
 }
 
+func (m *mockController) Options(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	m.lastParams = params
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (m *mockController) Head(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	m.lastParams = params
+	w.WriteHeader(http.StatusOK)
+}
+
+func (m *mockController) BatchCreate(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	m.lastParams = params
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (m *mockController) BatchDelete(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	m.lastParams = params
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func TestResource_RouteRegistration(t *testing.T) {
 	r := NewRouter()
 	r.Resource("/users", &mockController{})

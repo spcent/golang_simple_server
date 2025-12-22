@@ -35,12 +35,13 @@ type AppConfig struct {
 
 // App represents the main application instance
 type App struct {
-	config     AppConfig      // Application configuration
-	mux        *http.ServeMux // HTTP serve mux
-	router     *router.Router // HTTP router
-	wsHub      *ws.Hub        // WebSocket hub
-	started    bool           // Whether the app has started
-	httpServer *http.Server   // HTTP server instance
+	config      AppConfig               // Application configuration
+	mux         *http.ServeMux          // HTTP serve mux
+	router      *router.Router          // HTTP router
+	wsHub       *ws.Hub                 // WebSocket hub
+	started     bool                    // Whether the app has started
+	httpServer  *http.Server            // HTTP server instance
+	middlewares []middleware.Middleware // Stored middleware for all routes
 }
 
 // Option defines a function type for configuring the App
@@ -189,19 +190,8 @@ func (a *App) AnyHandler(path string, handler router.Handler) {
 
 // Use applies middleware to all routes
 func (a *App) Use(middlewares ...middleware.Middleware) {
-	chain := middleware.NewChain(middlewares...)
-
-	combinedHandler := func(w http.ResponseWriter, r *http.Request) {
-		rr := &responseRecorder{ResponseWriter: w, statusCode: http.StatusNotFound}
-		a.router.ServeHTTP(rr, r)
-
-		if rr.statusCode == http.StatusNotFound {
-			a.mux.ServeHTTP(w, r)
-		}
-	}
-
-	wrappedHandler := chain.ApplyFunc(combinedHandler)
-	a.mux.HandleFunc("/", wrappedHandler)
+	// Accumulate middleware instead of registering route immediately
+	a.middlewares = append(a.middlewares, middlewares...)
 }
 
 // responseRecorder is a wrapper around http.ResponseWriter that records the status code
@@ -269,6 +259,21 @@ func (a *App) setupServer() error {
 	if os.Getenv("APP_DEBUG") == "true" {
 		a.router.Print(os.Stdout)
 	}
+
+	// Apply all accumulated middleware at once
+	chain := middleware.NewChain(a.middlewares...)
+
+	combinedHandler := func(w http.ResponseWriter, r *http.Request) {
+		rr := &responseRecorder{ResponseWriter: w, statusCode: http.StatusNotFound}
+		a.router.ServeHTTP(rr, r)
+
+		if rr.statusCode == http.StatusNotFound {
+			a.mux.ServeHTTP(w, r)
+		}
+	}
+
+	wrappedHandler := chain.ApplyFunc(combinedHandler)
+	a.mux.HandleFunc("/", wrappedHandler)
 
 	// Create HTTP server instance
 	a.httpServer = &http.Server{
@@ -418,15 +423,11 @@ func (a *App) EnableRateLimit(rate float64, capacity int) {
 // EnableCORS enables the CORS middleware
 func (a *App) EnableCORS() {
 	// Convert CORS middleware from func(http.Handler) http.Handler to middleware.Middleware
-	a.Use(func(h middleware.Handler) middleware.Handler {
-		return middleware.Handler(middleware.CORS(http.Handler(h)))
-	})
+	a.Use(middleware.FromHTTPHandlerMiddleware(middleware.CORS))
 }
 
 // EnableRecovery enables the recovery middleware
 func (a *App) EnableRecovery() {
 	// Convert http.Handler middleware to Middleware type
-	a.Use(func(h middleware.Handler) middleware.Handler {
-		return middleware.Handler(middleware.RecoveryMiddleware(http.Handler(h)))
-	})
+	a.Use(middleware.FromHTTPHandlerMiddleware(middleware.RecoveryMiddleware))
 }

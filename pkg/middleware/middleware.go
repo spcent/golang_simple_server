@@ -85,6 +85,15 @@ func FromFuncMiddleware(fm FuncMiddleware) Middleware {
 	}
 }
 
+// FromHTTPHandlerMiddleware converts a func(http.Handler) http.Handler to a Middleware
+// This function is useful for converting standard http.Handler middlewares to the Middleware type
+func FromHTTPHandlerMiddleware(mw func(http.Handler) http.Handler) Middleware {
+	return func(next Handler) Handler {
+		// Convert our Handler to http.Handler, apply the middleware, then convert back
+		return Handler(mw(http.Handler(next)))
+	}
+}
+
 // Apply applies middlewares to a Handler
 // This is a generic version that works with both Middleware and FuncMiddleware
 func Apply(h any, m ...any) Handler {

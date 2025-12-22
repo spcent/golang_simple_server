@@ -361,7 +361,6 @@ func (r *Router) applyMiddlewareAndServe(w http.ResponseWriter, req *http.Reques
 func (r *Router) matchRoute(root *node, parts []string) (Handler, []string, []string) {
 	current := root
 	paramValues := make([]string, 0, len(parts))
-	paramKeys := make([]string, 0, len(parts))
 
 	for i, part := range parts {
 		// Try to find exact match first
@@ -375,10 +374,6 @@ func (r *Router) matchRoute(root *node, parts []string) (Handler, []string, []st
 		paramChild := r.findParamChild(current)
 		if paramChild != nil {
 			paramValues = append(paramValues, part)
-			// Extract param name from child path (e.g., ":id" -> "id")
-			if len(paramChild.path) > 1 && paramChild.path[0] == ':' {
-				paramKeys = append(paramKeys, paramChild.path[1:])
-			}
 			current = paramChild
 			continue
 		}
@@ -388,10 +383,6 @@ func (r *Router) matchRoute(root *node, parts []string) (Handler, []string, []st
 		if wildChild != nil {
 			wildValue := strings.Join(parts[i:], "/")
 			paramValues = append(paramValues, wildValue)
-			// Extract wildcard name from child path (e.g., "*filepath" -> "filepath")
-			if len(wildChild.path) > 1 && wildChild.path[0] == '*' {
-				paramKeys = append(paramKeys, wildChild.path[1:])
-			}
 			current = wildChild
 			break
 		}
@@ -400,7 +391,8 @@ func (r *Router) matchRoute(root *node, parts []string) (Handler, []string, []st
 		return nil, nil, nil
 	}
 
-	return current.handler, paramValues, paramKeys
+	// Use the paramKeys stored in the node during route registration
+	return current.handler, paramValues, current.paramKeys
 }
 
 // findChildForPath finds a child node that matches the given path segment
