@@ -42,6 +42,7 @@ type App struct {
 	started     bool                    // Whether the app has started
 	httpServer  *http.Server            // HTTP server instance
 	middlewares []middleware.Middleware // Stored middleware for all routes
+	handler     http.Handler            // Combined handler with middleware applied
 }
 
 // Option defines a function type for configuring the App
@@ -207,8 +208,11 @@ func (a *App) AnyHandler(path string, handler router.Handler) {
 func (a *App) Use(middlewares ...middleware.Middleware) {
 	// Collect middleware
 	a.middlewares = append(a.middlewares, middlewares...)
+	a.buildHandler()
+}
 
-	// Apply middleware immediately for testing purposes and to ensure latest middleware is used
+// buildHandler builds the combined handler with current middleware stack
+func (a *App) buildHandler() {
 	chain := middleware.NewChain(a.middlewares...)
 
 	combinedHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -220,8 +224,7 @@ func (a *App) Use(middlewares ...middleware.Middleware) {
 		}
 	}
 
-	wrappedHandler := chain.ApplyFunc(combinedHandler)
-	a.mux.HandleFunc("/", wrappedHandler)
+	a.handler = chain.ApplyFunc(combinedHandler)
 }
 
 // responseRecorder is a wrapper around http.ResponseWriter that records the status code
@@ -295,28 +298,12 @@ func (a *App) setupServer() error {
 		a.router.Print(os.Stdout)
 	}
 
-	// Apply all accumulated middleware at once
-	chain := middleware.NewChain(a.middlewares...)
-
-	combinedHandler := func(w http.ResponseWriter, r *http.Request) {
-		rr := &responseRecorder{ResponseWriter: w, statusCode: http.StatusNotFound}
-		a.router.ServeHTTP(rr, r)
-
-		if rr.statusCode == http.StatusNotFound {
-			a.mux.ServeHTTP(w, r)
-		}
-	}
-
-	wrappedHandler := chain.ApplyFunc(combinedHandler)
-
-	// Update the middleware handler regardless of whether it's been registered before
-	// This ensures the latest middleware chain is always applied
-	a.mux.HandleFunc("/", wrappedHandler)
+	a.buildHandler()
 
 	// Create HTTP server instance
 	a.httpServer = &http.Server{
 		Addr:    a.config.Addr,
-		Handler: a.mux,
+		Handler: a.handler,
 	}
 
 	return nil

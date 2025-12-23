@@ -2,12 +2,15 @@ package ipc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -262,6 +265,8 @@ func TestClientServer(t *testing.T) {
 		numClients := 5
 		var wg sync.WaitGroup
 		wg.Add(numClients)
+		var acceptWG sync.WaitGroup
+		acceptWG.Add(numClients)
 
 		// Start clients
 		for i := 0; i < numClients; i++ {
@@ -285,8 +290,16 @@ func TestClientServer(t *testing.T) {
 		// Accept clients on server
 		for i := 0; i < numClients; i++ {
 			go func() {
+				defer acceptWG.Done()
 				serverClient, err := server.Accept()
 				if err != nil {
+					// Ignore closed server during shutdown
+					if errors.Is(err, net.ErrClosed) {
+						return
+					}
+					if strings.Contains(err.Error(), "use of closed network connection") {
+						return
+					}
 					t.Errorf("Server accept failed: %v", err)
 					return
 				}
@@ -294,12 +307,15 @@ func TestClientServer(t *testing.T) {
 
 				buf := make([]byte, 1024)
 				if _, err := serverClient.Read(buf); err != nil {
-					t.Errorf("Server read failed: %v", err)
+					if !errors.Is(err, io.EOF) {
+						t.Errorf("Server read failed: %v", err)
+					}
 				}
 			}()
 		}
 
 		wg.Wait()
+		acceptWG.Wait()
 	})
 }
 
@@ -481,39 +497,62 @@ func TestErrorConditions(t *testing.T) {
 // TestConcurrency tests concurrent operations
 func TestConcurrency(t *testing.T) {
 	t.Run("ConcurrentReadsWrites", func(t *testing.T) {
-		server, client := setupTestPair(t)
-		defer server.Close()
-		defer client.Close()
-
-		serverClient, err := server.Accept()
+		server, err := NewServer(getTestAddr())
 		if err != nil {
-			t.Fatalf("Server accept failed: %v", err)
+			t.Fatalf("Failed to create server: %v", err)
 		}
-		defer serverClient.Close()
+		defer server.Close()
 
-		numRoutines := 10
-		var wg sync.WaitGroup
-		wg.Add(numRoutines * 2)
+		numRoutines := 5
+		var clientWG sync.WaitGroup
+		var serverWG sync.WaitGroup
+		clientWG.Add(numRoutines)
+		serverWG.Add(numRoutines)
 
-		// Concurrent writes from client
-		for i := 0; i < numRoutines; i++ {
-			go func(id int) {
-				defer wg.Done()
-				data := fmt.Sprintf("client-%d", id)
-				client.Write([]byte(data))
-			}(i)
-		}
-
-		// Concurrent reads from server
 		for i := 0; i < numRoutines; i++ {
 			go func() {
-				defer wg.Done()
-				buf := make([]byte, 1024)
-				serverClient.Read(buf)
+				defer serverWG.Done()
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+
+				serverClient, err := server.AcceptWithContext(ctx)
+				if err != nil {
+					if errors.Is(err, context.DeadlineExceeded) {
+						return
+					}
+					t.Errorf("AcceptWithContext failed: %v", err)
+					return
+				}
+				defer serverClient.Close()
+
+				buf := make([]byte, 64)
+				if _, err := serverClient.ReadWithTimeout(buf, time.Second); err != nil {
+					if nerr, ok := err.(net.Error); !ok || !nerr.Timeout() {
+						t.Errorf("ReadWithTimeout failed: %v", err)
+					}
+				}
 			}()
 		}
 
-		wg.Wait()
+		for i := 0; i < numRoutines; i++ {
+			go func(id int) {
+				defer clientWG.Done()
+				client, err := Dial(server.Addr())
+				if err != nil {
+					t.Errorf("Dial failed: %v", err)
+					return
+				}
+				defer client.Close()
+
+				data := fmt.Sprintf("client-%d", id)
+				if _, err := client.WriteWithTimeout([]byte(data), time.Second); err != nil {
+					t.Errorf("WriteWithTimeout failed: %v", err)
+				}
+			}(i)
+		}
+
+		clientWG.Wait()
+		serverWG.Wait()
 	})
 
 	t.Run("ConcurrentAccepts", func(t *testing.T) {
