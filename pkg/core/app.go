@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,20 +17,6 @@ import (
 	"github.com/spcent/golang_simple_server/pkg/router"
 )
 
-// Command line flags
-var (
-	// TLS flags
-	tlsEnabled  = flag.Bool("tls", false, "Enable TLS support")
-	tlsCertFile = flag.String("tls-cert", "./cert.pem", "Path to TLS certificate file")
-	tlsKeyFile  = flag.String("tls-key", "./key.pem", "Path to TLS private key file")
-
-	// Server address flag
-	addrFlag = flag.String("addr", ":8080", "Server address")
-
-	// Debug mode flag
-	debugFlag = flag.Bool("debug", false, "Enable debug mode")
-)
-
 // TLSConfig defines TLS configuration
 type TLSConfig struct {
 	Enabled  bool   // Whether to enable TLS
@@ -41,10 +26,11 @@ type TLSConfig struct {
 
 // AppConfig defines application configuration
 type AppConfig struct {
-	Addr    string    // Server address
-	EnvFile string    // Path to .env file
-	TLS     TLSConfig // TLS configuration
-	Debug   bool      // Debug mode
+	Addr            string        // Server address
+	EnvFile         string        // Path to .env file
+	TLS             TLSConfig     // TLS configuration
+	Debug           bool          // Debug mode
+	ShutdownTimeout time.Duration // Graceful shutdown timeout
 }
 
 // App represents the main application instance
@@ -90,6 +76,13 @@ func WithEnvPath(path string) Option {
 	}
 }
 
+// WithShutdownTimeout sets graceful shutdown timeout
+func WithShutdownTimeout(timeout time.Duration) Option {
+	return func(a *App) {
+		a.config.ShutdownTimeout = timeout
+	}
+}
+
 // WithTLS configures TLS for the app
 func WithTLS(certFile, keyFile string) Option {
 	return func(a *App) {
@@ -108,15 +101,23 @@ func WithTLSConfig(tlsConfig TLSConfig) Option {
 	}
 }
 
+// WithDebug enables debug mode for the app
+func WithDebug() Option {
+	return func(a *App) {
+		a.config.Debug = true
+	}
+}
+
 // New creates a new App instance with the provided options
 // Defaults are applied if no options are provided
 func New(options ...Option) *App {
 	app := &App{
 		config: AppConfig{
-			Addr:    ":8080",
-			EnvFile: ".env",
-			TLS:     TLSConfig{Enabled: false},
-			Debug:   false,
+			Addr:            ":8080",
+			EnvFile:         ".env",
+			TLS:             TLSConfig{Enabled: false},
+			Debug:           false,
+			ShutdownTimeout: 5 * time.Second,
 		},
 		mux:    http.NewServeMux(),
 		router: router.NewRouter(),
@@ -206,19 +207,19 @@ func (a *App) AnyHandler(path string, handler router.Handler) {
 func (a *App) Use(middlewares ...middleware.Middleware) {
 	// Collect middleware
 	a.middlewares = append(a.middlewares, middlewares...)
-	
+
 	// Apply middleware immediately for testing purposes and to ensure latest middleware is used
 	chain := middleware.NewChain(a.middlewares...)
-	
+
 	combinedHandler := func(w http.ResponseWriter, r *http.Request) {
 		rr := &responseRecorder{ResponseWriter: w, statusCode: http.StatusNotFound}
 		a.router.ServeHTTP(rr, r)
-		
+
 		if rr.statusCode == http.StatusNotFound {
 			a.mux.ServeHTTP(w, r)
 		}
 	}
-	
+
 	wrappedHandler := chain.ApplyFunc(combinedHandler)
 	a.mux.HandleFunc("/", wrappedHandler)
 }
@@ -243,9 +244,6 @@ func (a *App) Router() *router.Router {
 // Boot initializes and starts the application
 // It sets up the router with the mux and starts the HTTP server
 func (a *App) Boot() error {
-	// Parse command line flags
-	flag.Parse()
-
 	// Initialize logger
 	glog.Init()
 	defer glog.Flush()
@@ -256,17 +254,7 @@ func (a *App) Boot() error {
 		return err
 	}
 
-	// Update configuration based on command line flags
-	if *addrFlag != ":8080" {
-		a.config.Addr = *addrFlag
-	}
-	if *tlsEnabled {
-		a.config.TLS.Enabled = true
-		a.config.TLS.CertFile = *tlsCertFile
-		a.config.TLS.KeyFile = *tlsKeyFile
-	}
-	if *debugFlag {
-		a.config.Debug = true
+	if a.config.Debug {
 		os.Setenv("APP_DEBUG", "true")
 	}
 
@@ -285,6 +273,10 @@ func (a *App) Boot() error {
 
 // loadEnv loads environment variables from .env file if it exists
 func (a *App) loadEnv() error {
+	if a.config.EnvFile == "" {
+		return nil
+	}
+
 	if _, err := os.Stat(a.config.EnvFile); err == nil {
 		glog.Infof("Load .env file: %s", a.config.EnvFile)
 		err := config.LoadEnv(a.config.EnvFile, true)
@@ -343,7 +335,11 @@ func (a *App) startServer() error {
 
 		glog.Info("SIGTERM received, shutting down...")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		timeout := a.config.ShutdownTimeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
 		if err := a.httpServer.Shutdown(ctx); err != nil {
