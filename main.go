@@ -1,17 +1,40 @@
 package main
 
 import (
+	"flag"
 	"net/http"
+	"time"
 
 	"github.com/spcent/golang_simple_server/handlers"
 	"github.com/spcent/golang_simple_server/pkg/core"
 )
 
 func main() {
-	// Create a new app with default configuration
-	// For HTTPS support, use WithTLS option or command line flags
-	// Example: app := core.New(core.WithTLS("./cert.pem", "./key.pem"))
-	app := core.New()
+	addr := flag.String("addr", ":8080", "Server address")
+	envFile := flag.String("env", ".env", "Path to .env file")
+	tlsEnabled := flag.Bool("tls", false, "Enable TLS support")
+	tlsCertFile := flag.String("tls-cert", "./cert.pem", "Path to TLS certificate file")
+	tlsKeyFile := flag.String("tls-key", "./key.pem", "Path to TLS private key file")
+	debug := flag.Bool("debug", false, "Enable debug mode")
+	gracefulTimeout := flag.Duration("graceful-timeout", 5*time.Second, "Graceful shutdown timeout")
+	flag.Parse()
+
+	// Create a new app with configuration from flags
+	opts := []core.Option{
+		core.WithAddr(*addr),
+		core.WithEnvPath(*envFile),
+		core.WithShutdownTimeout(*gracefulTimeout),
+	}
+
+	if *tlsEnabled {
+		opts = append(opts, core.WithTLS(*tlsCertFile, *tlsKeyFile))
+	}
+
+	if *debug {
+		opts = append(opts, core.WithDebug())
+	}
+
+	app := core.New(opts...)
 
 	// Register routes directly on the app using the new API
 	app.Get("/ping", func(w http.ResponseWriter, r *http.Request) {
