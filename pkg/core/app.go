@@ -18,6 +18,20 @@ import (
 	"github.com/spcent/golang_simple_server/pkg/router"
 )
 
+// Command line flags
+var (
+	// TLS flags
+	tlsEnabled  = flag.Bool("tls", false, "Enable TLS support")
+	tlsCertFile = flag.String("tls-cert", "./cert.pem", "Path to TLS certificate file")
+	tlsKeyFile  = flag.String("tls-key", "./key.pem", "Path to TLS private key file")
+
+	// Server address flag
+	addrFlag = flag.String("addr", ":8080", "Server address")
+
+	// Debug mode flag
+	debugFlag = flag.Bool("debug", false, "Enable debug mode")
+)
+
 // TLSConfig defines TLS configuration
 type TLSConfig struct {
 	Enabled  bool   // Whether to enable TLS
@@ -188,10 +202,25 @@ func (a *App) AnyHandler(path string, handler router.Handler) {
 	a.Router().Any(path, handler)
 }
 
-// Use applies middleware to all routes
+// Use adds middleware to the application's middleware chain
 func (a *App) Use(middlewares ...middleware.Middleware) {
-	// Accumulate middleware instead of registering route immediately
+	// Collect middleware
 	a.middlewares = append(a.middlewares, middlewares...)
+	
+	// Apply middleware immediately for testing purposes and to ensure latest middleware is used
+	chain := middleware.NewChain(a.middlewares...)
+	
+	combinedHandler := func(w http.ResponseWriter, r *http.Request) {
+		rr := &responseRecorder{ResponseWriter: w, statusCode: http.StatusNotFound}
+		a.router.ServeHTTP(rr, r)
+		
+		if rr.statusCode == http.StatusNotFound {
+			a.mux.ServeHTTP(w, r)
+		}
+	}
+	
+	wrappedHandler := chain.ApplyFunc(combinedHandler)
+	a.mux.HandleFunc("/", wrappedHandler)
 }
 
 // responseRecorder is a wrapper around http.ResponseWriter that records the status code
@@ -225,6 +254,20 @@ func (a *App) Boot() error {
 	// Load environment variables from .env file if it exists
 	if err := a.loadEnv(); err != nil {
 		return err
+	}
+
+	// Update configuration based on command line flags
+	if *addrFlag != ":8080" {
+		a.config.Addr = *addrFlag
+	}
+	if *tlsEnabled {
+		a.config.TLS.Enabled = true
+		a.config.TLS.CertFile = *tlsCertFile
+		a.config.TLS.KeyFile = *tlsKeyFile
+	}
+	if *debugFlag {
+		a.config.Debug = true
+		os.Setenv("APP_DEBUG", "true")
 	}
 
 	// Setup HTTP server
@@ -273,6 +316,9 @@ func (a *App) setupServer() error {
 	}
 
 	wrappedHandler := chain.ApplyFunc(combinedHandler)
+
+	// Update the middleware handler regardless of whether it's been registered before
+	// This ensures the latest middleware chain is always applied
 	a.mux.HandleFunc("/", wrappedHandler)
 
 	// Create HTTP server instance
