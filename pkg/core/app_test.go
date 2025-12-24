@@ -83,6 +83,11 @@ func TestUseMiddlewareAppliedAfterSetup(t *testing.T) {
 	if err := app.setupServer(); err != nil {
 		t.Fatalf("setupServer returned error: %v", err)
 	}
+
+	tmpFile, err := os.CreateTemp("", "app_env")
+	if err != nil {
+		t.Fatalf("failed to create temp env file: %v", err)
+	}
 	defer os.Remove(tmpFile.Name())
 
 	tests := []struct {
