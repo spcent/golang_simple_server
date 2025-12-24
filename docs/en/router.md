@@ -15,17 +15,15 @@ Key Features:
 
 ### 2.1 Handler Type
 
-Handler is the type definition for route handler functions:
+Handler is an alias to the standard library's `http.Handler` (and `HandlerFunc`), so you register handlers just like you would with `http.ServeMux`:
 
 ```go
 // Handler defines the function signature for handling HTTP requests
-type Handler func(http.ResponseWriter, *http.Request, map[string]string)
+type Handler = http.Handler
+type HandlerFunc = http.HandlerFunc
 ```
 
-Parameter descriptions:
-- `http.ResponseWriter`: Used to write HTTP responses
-- `*http.Request`: Contains client request information
-- `map[string]string`: Contains parameters extracted from the URL path
+The router injects path parameters into `r.Context()`. Use helpers like `Param(r, "id")` or `RequestContextFrom(r.Context())` to read them without custom handler signatures.
 
 ### 2.2 RouteRegistrar Interface
 
@@ -141,12 +139,12 @@ The Resource method provides functionality for quickly registering RESTful resou
 // Just implement the corresponding methods
 
 type ResourceController interface {
-    Index(w http.ResponseWriter, r *http.Request, params map[string]string)    // GET    /resources
-    Create(w http.ResponseWriter, r *http.Request, params map[string]string)   // POST   /resources
-    Show(w http.ResponseWriter, r *http.Request, params map[string]string)     // GET    /resources/:id
-    Update(w http.ResponseWriter, r *http.Request, params map[string]string)   // PUT    /resources/:id
-    Delete(w http.ResponseWriter, r *http.Request, params map[string]string)   // DELETE /resources/:id
-    Patch(w http.ResponseWriter, r *http.Request, params map[string]string)    // PATCH  /resources/:id
+    Index(context.Context, http.ResponseWriter, *http.Request)  // GET    /resources
+    Create(context.Context, http.ResponseWriter, *http.Request) // POST   /resources
+    Show(context.Context, http.ResponseWriter, *http.Request)   // GET    /resources/:id
+    Update(context.Context, http.ResponseWriter, *http.Request) // PUT    /resources/:id
+    Delete(context.Context, http.ResponseWriter, *http.Request) // DELETE /resources/:id
+    Patch(context.Context, http.ResponseWriter, *http.Request)  // PATCH  /resources/:id
 }
 
 // Register resource routes

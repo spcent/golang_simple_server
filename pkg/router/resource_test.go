@@ -16,59 +16,59 @@ type mockController struct {
 	lastParams   map[string]string
 }
 
-func (m *mockController) Index(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (m *mockController) Index(w http.ResponseWriter, r *http.Request) {
 	m.indexCalled++
-	m.lastParams = params
+	m.lastParams = RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusOK)
 }
 
-func (m *mockController) Show(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (m *mockController) Show(w http.ResponseWriter, r *http.Request) {
 	m.showCalled++
-	m.lastParams = params
+	m.lastParams = RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusOK)
 }
 
-func (m *mockController) Create(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (m *mockController) Create(w http.ResponseWriter, r *http.Request) {
 	m.createCalled++
-	m.lastParams = params
+	m.lastParams = RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusCreated)
 }
 
-func (m *mockController) Update(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (m *mockController) Update(w http.ResponseWriter, r *http.Request) {
 	m.updateCalled++
-	m.lastParams = params
+	m.lastParams = RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusOK)
 }
 
-func (m *mockController) Delete(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (m *mockController) Delete(w http.ResponseWriter, r *http.Request) {
 	m.deleteCalled++
-	m.lastParams = params
+	m.lastParams = RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (m *mockController) Patch(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (m *mockController) Patch(w http.ResponseWriter, r *http.Request) {
 	m.patchCalled++
-	m.lastParams = params
+	m.lastParams = RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusOK)
 }
 
-func (m *mockController) Options(w http.ResponseWriter, r *http.Request, params map[string]string) {
-	m.lastParams = params
+func (m *mockController) Options(w http.ResponseWriter, r *http.Request) {
+	m.lastParams = RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (m *mockController) Head(w http.ResponseWriter, r *http.Request, params map[string]string) {
-	m.lastParams = params
+func (m *mockController) Head(w http.ResponseWriter, r *http.Request) {
+	m.lastParams = RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusOK)
 }
 
-func (m *mockController) BatchCreate(w http.ResponseWriter, r *http.Request, params map[string]string) {
-	m.lastParams = params
+func (m *mockController) BatchCreate(w http.ResponseWriter, r *http.Request) {
+	m.lastParams = RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusCreated)
 }
 
-func (m *mockController) BatchDelete(w http.ResponseWriter, r *http.Request, params map[string]string) {
-	m.lastParams = params
+func (m *mockController) BatchDelete(w http.ResponseWriter, r *http.Request) {
+	m.lastParams = RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -150,12 +150,12 @@ func TestBaseResourceController_DefaultImplementation(t *testing.T) {
 		path   string
 		call   func(w http.ResponseWriter, r *http.Request)
 	}{
-		{"Index", "GET", "/posts", func(w http.ResponseWriter, r *http.Request) { ctrl.Index(w, r, nil) }},
-		{"Show", "GET", "/posts/456", func(w http.ResponseWriter, r *http.Request) { ctrl.Show(w, r, nil) }},
-		{"Create", "POST", "/posts", func(w http.ResponseWriter, r *http.Request) { ctrl.Create(w, r, nil) }},
-		{"Update", "PUT", "/posts/789", func(w http.ResponseWriter, r *http.Request) { ctrl.Update(w, r, nil) }},
-		{"Delete", "DELETE", "/posts/000", func(w http.ResponseWriter, r *http.Request) { ctrl.Delete(w, r, nil) }},
-		{"Patch", "PATCH", "/posts/111", func(w http.ResponseWriter, r *http.Request) { ctrl.Patch(w, r, nil) }},
+		{"Index", "GET", "/posts", func(w http.ResponseWriter, r *http.Request) { ctrl.Index(w, r) }},
+		{"Show", "GET", "/posts/456", func(w http.ResponseWriter, r *http.Request) { ctrl.Show(w, r) }},
+		{"Create", "POST", "/posts", func(w http.ResponseWriter, r *http.Request) { ctrl.Create(w, r) }},
+		{"Update", "PUT", "/posts/789", func(w http.ResponseWriter, r *http.Request) { ctrl.Update(w, r) }},
+		{"Delete", "DELETE", "/posts/000", func(w http.ResponseWriter, r *http.Request) { ctrl.Delete(w, r) }},
+		{"Patch", "PATCH", "/posts/111", func(w http.ResponseWriter, r *http.Request) { ctrl.Patch(w, r) }},
 	}
 
 	for _, tt := range tests {

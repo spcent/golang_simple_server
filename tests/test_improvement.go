@@ -7,6 +7,7 @@ import (
 
 	"github.com/spcent/golang_simple_server/pkg/core"
 	"github.com/spcent/golang_simple_server/pkg/middleware"
+	"github.com/spcent/golang_simple_server/pkg/router"
 )
 
 func main() {
@@ -42,8 +43,8 @@ func main() {
 	})
 
 	// Example 3: Use router with custom Handler (dynamic route with params)
-	app.Router().Get("/user/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
-		userID := params["id"]
+	app.Router().GetFunc("/user/:id", func(w http.ResponseWriter, r *http.Request) {
+		userID, _ := router.Param(r, "id")
 		w.Header().Set("Content-Type", "application/json")
 
 		// Safely encode the user ID as JSON to avoid injection

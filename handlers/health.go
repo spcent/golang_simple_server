@@ -11,7 +11,7 @@ import (
 type HealthHandler struct{}
 
 func (h *HealthHandler) Register(r *router.Router) {
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	r.GetFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
 		resp := map[string]any{
@@ -22,7 +22,7 @@ func (h *HealthHandler) Register(r *router.Router) {
 		json.NewEncoder(w).Encode(resp)
 	})
 
-	r.Get("/ready", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	r.GetFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
 		readiness := health.GetReadiness()
