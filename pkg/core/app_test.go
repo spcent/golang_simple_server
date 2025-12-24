@@ -178,6 +178,27 @@ func TestConfigureWebSocketRequiresSecret(t *testing.T) {
 	}
 }
 
+func TestConfigureWebSocketLoadsEnvFile(t *testing.T) {
+	os.Unsetenv("WS_SECRET")
+	defer os.Unsetenv("WS_SECRET")
+
+	tmpFile, err := os.CreateTemp("", "app_env")
+	if err != nil {
+		t.Fatalf("failed to create temp env file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString("WS_SECRET=from_env\n"); err != nil {
+		t.Fatalf("failed to write env file: %v", err)
+	}
+	tmpFile.Close()
+
+	app := New(WithEnvPath(tmpFile.Name()))
+	if _, err := app.ConfigureWebSocket(); err != nil {
+		t.Fatalf("expected websocket configuration to load env, got error: %v", err)
+	}
+}
+
 func TestBroadcastAuthAndToggle(t *testing.T) {
 	secret := []byte("super-secret")
 
