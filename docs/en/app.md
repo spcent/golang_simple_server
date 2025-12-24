@@ -353,33 +353,102 @@ func main() {
 }
 ```
 
-## 10. Best Practices
+## 10. Practical Usage Patterns
 
-### 10.1 Application Organization
+### 10.1 Compose routes and middleware declaratively
+
+The App exposes thin helpers over the Router and middleware chain so you can define routes, groups, and cross-cutting concerns in one place:
+
+```go
+app := core.New(
+    core.WithAddr(":8081"),
+    core.WithEnvPath("./.env.local"),
+    core.WithShutdownTimeout(10*time.Second),
+)
+
+// Global middlewares are applied in registration order.
+app.EnableRecovery()
+app.EnableLogging()
+app.EnableRateLimit(20, 40)
+
+api := app.Router().Group("/api")
+v1 := api.Group("/v1")
+
+// Group-level middleware only wraps handlers registered on that group.
+authn := middleware.FromFuncMiddleware(func(next http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        if r.Header.Get("X-Debug") == "" {
+            http.Error(w, "missing debug header", http.StatusUnauthorized)
+            return
+        }
+        next(w, r)
+    }
+})
+v1.Use(authn)
+
+v1.GetFunc("/profile/:id", func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
+    fmt.Fprintf(w, "user=%s", params["id"])
+})
+
+app.Boot()
+```
+
+### 10.2 Boot with TLS and WebSocket enabled
+
+To exercise the full startup path (TLS, environment loading, WebSocket registration, graceful shutdown), configure the app before calling `Boot`:
+
+```go
+app := core.New(
+    core.WithAddr(":8443"),
+    core.WithEnvPath("./.env"),
+    core.WithTLS("./cert.pem", "./key.pem"),
+    core.WithShutdownTimeout(2*time.Second),
+)
+
+// Routes can be registered directly on App
+app.Get("/ping", func(w http.ResponseWriter, _ *http.Request) {
+    w.Write([]byte("pong"))
+})
+
+// WebSocket uses WS_SECRET from the env file via ConfigureWebSocket.
+if _, err := app.ConfigureWebSocket(); err != nil {
+    log.Fatalf("websocket setup failed: %v", err)
+}
+
+// Start the server (blocks until SIGTERM/interrupt triggers graceful shutdown)
+if err := app.Boot(); err != nil {
+    log.Fatal(err)
+}
+```
+
+## 11. Best Practices
+
+### 11.1 Application Organization
 
 - Separate routes, handler functions, and middleware into different packages
 - Use route registrars to organize related routes
 - Keep application initialization code concise in the main function
 
-### 10.2 Configuration Management
+### 11.2 Configuration Management
 
 - Use `.env` files to manage environment-specific configurations
 - Store sensitive information (such as passwords, API keys) in environment variables rather than in code
 - Create different `.env` files for different environments (development, testing, production)
 
-### 10.3 Error Handling
+### 11.3 Error Handling
 
 - Use middleware for unified error handling
 - Use appropriate error logging for key operations
 - Provide meaningful error messages to users while avoiding disclosing internal system information
 
-### 10.4 Performance Optimization
+### 11.4 Performance Optimization
 
 - Avoid performing time-consuming operations in middleware
 - Use route grouping to reduce duplicate code
 - For high-traffic applications, consider using connection pooling and caching
 
-## 11. Summary
+## 12. Summary
 
 The App component is the core of the Go Simple Server framework, providing complete web server lifecycle management functionality. Through this documentation, you should now understand the main features, usage methods, and best practices of App.
 
