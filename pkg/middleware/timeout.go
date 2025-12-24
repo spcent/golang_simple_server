@@ -29,9 +29,11 @@ func Timeout(d time.Duration) Middleware {
 			case <-done:
 				tw.WriteTo(w)
 			case <-ctx.Done():
-				JSON(w, http.StatusGatewayTimeout, Response{
-					Code: http.StatusGatewayTimeout,
-					Msg:  "request timeout",
+				WriteError(w, r, APIError{
+					Status:   http.StatusGatewayTimeout,
+					Code:     "request_timeout",
+					Category: CategoryServer,
+					Message:  "request timed out",
 				})
 			}
 		})
