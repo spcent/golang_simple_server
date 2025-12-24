@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/spcent/golang_simple_server/pkg/config"
+	"github.com/spcent/golang_simple_server/pkg/health"
 	log "github.com/spcent/golang_simple_server/pkg/log"
 	"github.com/spcent/golang_simple_server/pkg/middleware"
 	ws "github.com/spcent/golang_simple_server/pkg/net/websocket"
@@ -318,6 +319,9 @@ func (a *App) setupServer() error {
 func (a *App) startServer() error {
 	a.started = true
 
+	// Mark the service as ready once the server is configured.
+	health.SetReady()
+
 	// Shutdown the server gracefully when SIGTERM is received
 	idleConnsClosed := make(chan struct{})
 	go func() {
@@ -353,6 +357,9 @@ func (a *App) startServer() error {
 	} else {
 		err = a.httpServer.ListenAndServe()
 	}
+
+	// The server is shutting down; mark it as not ready for new traffic.
+	health.SetNotReady("shutting down")
 
 	<-idleConnsClosed
 
