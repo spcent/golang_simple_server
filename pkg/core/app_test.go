@@ -83,6 +83,7 @@ func TestUseMiddlewareAppliedAfterSetup(t *testing.T) {
 	if err := app.setupServer(); err != nil {
 		t.Fatalf("setupServer returned error: %v", err)
 	}
+	defer os.Remove(tmpFile.Name())
 
 	tests := []struct {
 		path     string
@@ -91,6 +92,7 @@ func TestUseMiddlewareAppliedAfterSetup(t *testing.T) {
 		{path: "/router", expected: "router"},
 		{path: "/mux", expected: "mux"},
 	}
+	tmpFile.Close()
 
 	for _, tt := range tests {
 		req := httptest.NewRequest(http.MethodGet, tt.path, nil)
