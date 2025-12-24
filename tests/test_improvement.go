@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -26,14 +27,36 @@ func main() {
 			name = "Guest"
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(fmt.Sprintf(`{"message":"Hello, %s!"}`, name)))
+
+		// Safely encode the message as JSON to avoid injection
+		type helloResponse struct {
+			Message string `json:"message"`
+		}
+		resp := helloResponse{Message: fmt.Sprintf("Hello, %s!", name)}
+		payload, err := json.Marshal(resp)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		w.Write(payload)
 	})
 
 	// Example 3: Use router with custom Handler (dynamic route with params)
 	app.Router().Get("/user/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		userID := params["id"]
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(fmt.Sprintf(`{"user_id":"%s"}`, userID)))
+
+		// Safely encode the user ID as JSON to avoid injection
+		type userResponse struct {
+			UserID string `json:"user_id"`
+		}
+		resp := userResponse{UserID: userID}
+		payload, err := json.Marshal(resp)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		w.Write(payload)
 	})
 
 	// Apply middleware using the correct middleware.Middleware type
