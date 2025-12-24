@@ -481,18 +481,18 @@ func (kv *KVStore) Get(key string) ([]byte, error) {
 	}
 
 	shard := kv.getShard(key)
-	
+
 	// First, try with read lock for non-modifying operations
 	shard.mu.RLock()
 	entry, exists := shard.data[key]
-	
+
 	// Check if key exists and is not expired
 	if !exists {
 		shard.mu.RUnlock()
 		atomic.AddInt64(&kv.misses, 1)
 		return nil, ErrKeyNotFound
 	}
-	
+
 	// Check expiration (read-only check first)
 	isExpired := !entry.ExpireAt.IsZero() && time.Now().After(entry.ExpireAt)
 	if isExpired {
@@ -512,12 +512,12 @@ func (kv *KVStore) Get(key string) ([]byte, error) {
 		atomic.AddInt64(&kv.misses, 1)
 		return nil, ErrKeyExpired
 	}
-	
+
 	// For LRU update, we need write lock
 	// Create defensive copy first under read lock
 	valueCopy := append([]byte(nil), entry.Value...)
 	shard.mu.RUnlock()
-	
+
 	// Acquire write lock for LRU update
 	shard.mu.Lock()
 	// Recheck existence (could have been deleted by another goroutine)
@@ -532,7 +532,7 @@ func (kv *KVStore) Get(key string) ([]byte, error) {
 		kv.moveToFront(shard, entry)
 	}
 	shard.mu.Unlock()
-	
+
 	atomic.AddInt64(&kv.hits, 1)
 	return valueCopy, nil
 }
@@ -760,8 +760,9 @@ func (kv *KVStore) loadSnapshot() error {
 
 		shard := kv.getShard(entry.Key)
 		shard.mu.Lock()
-		shard.data[entry.Key] = &entry
-		kv.moveToFront(shard, &entry)
+		entryCopy := entry
+		shard.data[entry.Key] = &entryCopy
+		kv.moveToFront(shard, &entryCopy)
 		shard.mu.Unlock()
 
 		atomic.AddInt64(&kv.entries, 1)
