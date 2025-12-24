@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	log "github.com/spcent/golang_simple_server/pkg/log"
 	"github.com/spcent/golang_simple_server/pkg/middleware"
 )
 
@@ -66,6 +67,7 @@ type Router struct {
 	mu          sync.RWMutex            // Mutex for concurrent access
 	parent      *Router                 // Parent router for groups
 	middlewares []middleware.Middleware // Group-level middlewares
+	logger      log.StructuredLogger    // Logger for contextual handlers
 }
 
 type paramsContextKey struct{}
@@ -94,7 +96,16 @@ func NewRouter() *Router {
 		prefix:      "",
 		parent:      nil,
 		middlewares: []middleware.Middleware{},
+		logger:      log.NewGLogger(),
 	}
+}
+
+// SetLogger configures the logger used by context-aware handlers.
+func (r *Router) SetLogger(logger log.StructuredLogger) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.logger = logger
 }
 
 func (r *Router) Freeze() {
@@ -308,6 +319,14 @@ func (r *Router) insertChild(parent *node, child *node) {
 	parent.children = append(parent.children[:i], append([]*node{child}, parent.children[i:]...)...)
 }
 
+func (r *Router) addCtxRoute(method, path string, h CtxHandlerFunc) {
+	if err := ValidateCtxHandler(h); err != nil {
+		panic(err.Error())
+	}
+
+	r.AddRoute(method, path, AdaptCtxHandler(h, r.logger))
+}
+
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -507,6 +526,14 @@ func (r *Router) Put(path string, h Handler)    { r.AddRoute(PUT, path, h) }
 func (r *Router) Delete(path string, h Handler) { r.AddRoute(DELETE, path, h) }
 func (r *Router) Patch(path string, h Handler)  { r.AddRoute(PATCH, path, h) }
 func (r *Router) Any(path string, h Handler)    { r.AddRoute(ANY, path, h) }
+
+// Context-aware handler registration helpers
+func (r *Router) GetCtx(path string, h CtxHandlerFunc)    { r.addCtxRoute(GET, path, h) }
+func (r *Router) PostCtx(path string, h CtxHandlerFunc)   { r.addCtxRoute(POST, path, h) }
+func (r *Router) PutCtx(path string, h CtxHandlerFunc)    { r.addCtxRoute(PUT, path, h) }
+func (r *Router) DeleteCtx(path string, h CtxHandlerFunc) { r.addCtxRoute(DELETE, path, h) }
+func (r *Router) PatchCtx(path string, h CtxHandlerFunc)  { r.addCtxRoute(PATCH, path, h) }
+func (r *Router) AnyCtx(path string, h CtxHandlerFunc)    { r.addCtxRoute(ANY, path, h) }
 
 // HandleFunc registers a standard http.HandlerFunc for the given path and method
 func (r *Router) HandleFunc(method, path string, h http.HandlerFunc) {

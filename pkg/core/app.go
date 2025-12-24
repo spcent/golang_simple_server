@@ -220,6 +220,10 @@ func New(options ...Option) *App {
 		opt(app)
 	}
 
+	if app.router != nil {
+		app.router.SetLogger(app.logger)
+	}
+
 	return app
 }
 
@@ -261,6 +265,31 @@ func (a *App) Patch(path string, handler http.HandlerFunc) {
 // Any registers a route for any HTTP method with the given handler
 func (a *App) Any(path string, handler http.HandlerFunc) {
 	a.Router().AnyFunc(path, handler)
+}
+
+// Context-aware registration helpers keep compatibility with net/http while exposing the unified Ctx.
+func (a *App) GetCtx(path string, handler router.CtxHandlerFunc) {
+	a.Router().GetCtx(path, handler)
+}
+
+func (a *App) PostCtx(path string, handler router.CtxHandlerFunc) {
+	a.Router().PostCtx(path, handler)
+}
+
+func (a *App) PutCtx(path string, handler router.CtxHandlerFunc) {
+	a.Router().PutCtx(path, handler)
+}
+
+func (a *App) DeleteCtx(path string, handler router.CtxHandlerFunc) {
+	a.Router().DeleteCtx(path, handler)
+}
+
+func (a *App) PatchCtx(path string, handler router.CtxHandlerFunc) {
+	a.Router().PatchCtx(path, handler)
+}
+
+func (a *App) AnyCtx(path string, handler router.CtxHandlerFunc) {
+	a.Router().AnyCtx(path, handler)
 }
 
 // GetHandler registers a GET route with the router's Handler type
