@@ -55,9 +55,6 @@ func New(options ...Option) *App {
 框架使用函数选项模式来配置 App 实例，提供了以下选项函数：
 
 ```go
-// WithMux 设置 HTTP 多路复用器
-func WithMux(mux *http.ServeMux) Option
-
 // WithRouter 设置路由器
 func WithRouter(router *router.Router) Option
 

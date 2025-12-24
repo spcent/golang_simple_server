@@ -36,7 +36,6 @@ type AppConfig struct {
 // App represents the main application instance
 type App struct {
 	config      AppConfig               // Application configuration
-	mux         *http.ServeMux          // HTTP serve mux
 	router      *router.Router          // HTTP router
 	wsHub       *ws.Hub                 // WebSocket hub
 	started     bool                    // Whether the app has started
@@ -48,13 +47,6 @@ type App struct {
 // Option defines a function type for configuring the App
 // It follows the functional options pattern
 type Option func(*App)
-
-// WithMux sets the http.ServeMux for the App
-func WithMux(mux *http.ServeMux) Option {
-	return func(a *App) {
-		a.mux = mux
-	}
-}
 
 // WithRouter sets the router for the App
 func WithRouter(router *router.Router) Option {
@@ -120,7 +112,6 @@ func New(options ...Option) *App {
 			Debug:           false,
 			ShutdownTimeout: 5 * time.Second,
 		},
-		mux:    http.NewServeMux(),
 		router: router.NewRouter(),
 	}
 
@@ -133,15 +124,13 @@ func New(options ...Option) *App {
 }
 
 // HandleFunc registers a handler function for the given path
-// It's a wrapper around http.ServeMux.HandleFunc
 func (a *App) HandleFunc(pattern string, handler http.HandlerFunc) {
-	a.mux.HandleFunc(pattern, handler)
+	a.router.HandleFunc(router.ANY, pattern, handler)
 }
 
 // Handle registers a handler for the given path
-// It's a wrapper around http.ServeMux.Handle
 func (a *App) Handle(pattern string, handler http.Handler) {
-	a.mux.Handle(pattern, handler)
+	a.router.Handle(router.ANY, pattern, handler)
 }
 
 // Get registers a GET route with the given handler
@@ -206,37 +195,18 @@ func (a *App) AnyHandler(path string, handler router.Handler) {
 
 // Use adds middleware to the application's middleware chain
 func (a *App) Use(middlewares ...middleware.Middleware) {
-	// Collect middleware
+	if a.started {
+		panic("cannot add middleware after app has started")
+	}
+
+	// Collect middleware for later handler construction during setupServer
 	a.middlewares = append(a.middlewares, middlewares...)
-	a.buildHandler()
 }
 
 // buildHandler builds the combined handler with current middleware stack
 func (a *App) buildHandler() {
 	chain := middleware.NewChain(a.middlewares...)
-
-	combinedHandler := func(w http.ResponseWriter, r *http.Request) {
-		rr := &responseRecorder{ResponseWriter: w, statusCode: http.StatusNotFound}
-		a.router.ServeHTTP(rr, r)
-
-		if rr.statusCode == http.StatusNotFound {
-			a.mux.ServeHTTP(w, r)
-		}
-	}
-
-	a.handler = chain.ApplyFunc(combinedHandler)
-}
-
-// responseRecorder is a wrapper around http.ResponseWriter that records the status code
-// It's used to check if the router handled the request
-type responseRecorder struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (rr *responseRecorder) WriteHeader(code int) {
-	rr.statusCode = code
-	rr.ResponseWriter.WriteHeader(code)
+	a.handler = chain.Apply(a.router)
 }
 
 // Router returns the underlying router for advanced configuration
@@ -408,13 +378,13 @@ func (a *App) ConfigureWebSocketWithOptions(config WebSocketConfig) *ws.Hub {
 	wsAuth := ws.NewSimpleRoomAuth(config.Secret)
 
 	// Register WebSocket handler
-	a.HandleFunc(config.WSRoutePath, func(w http.ResponseWriter, r *http.Request) {
+	a.Router().GetFunc(config.WSRoutePath, func(w http.ResponseWriter, r *http.Request) {
 		ws.ServeWSWithAuth(w, r, hub, wsAuth, config.SendQueueSize,
 			config.SendTimeout, config.SendBehavior)
 	})
 
 	// Register broadcast endpoint
-	a.HandleFunc(config.BroadcastPath, func(w http.ResponseWriter, r *http.Request) {
+	a.Router().PostFunc(config.BroadcastPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return

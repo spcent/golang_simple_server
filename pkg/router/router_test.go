@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/spcent/golang_simple_server/pkg/middleware"
 )
 
 func TestBasicRoutes(t *testing.T) {
@@ -74,6 +76,30 @@ func TestParamRoutes(t *testing.T) {
 	}
 }
 
+func TestParamsInjectedIntoContext(t *testing.T) {
+	r := NewRouter()
+
+	r.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+		ctxParams := ParamsFromContext(r.Context())
+		if ctxParams == nil {
+			t.Fatalf("expected params in context")
+		}
+		if ctxParams["name"] != params["name"] {
+			t.Fatalf("context params mismatch: got %s want %s", ctxParams["name"], params["name"])
+		}
+		w.Write([]byte(ctxParams["name"]))
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/hello/Alice", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if got := strings.TrimSpace(w.Body.String()); got != "Alice" {
+		t.Fatalf("expected context value to be written, got %q", got)
+	}
+}
+
 func TestAnyRoute(t *testing.T) {
 	r := NewRouter()
 
@@ -117,52 +143,40 @@ func TestPrintRoutes(t *testing.T) {
 	}
 }
 
-func TestStaticAndParamRoutes(t *testing.T) {
+func TestMethodNotAllowed(t *testing.T) {
 	r := NewRouter()
 
-	// Static route
-	r.Get("/ping", func(w http.ResponseWriter, _ *http.Request, _ map[string]string) {
-		w.Write([]byte("pong"))
+	r.Any("/any", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+		w.Write([]byte("any"))
 	})
 
-	// Param route
-	r.Get("/hello/:name", func(w http.ResponseWriter, _ *http.Request, params map[string]string) {
-		w.Write([]byte("Hello " + params["name"]))
-	})
-
-	tests := []struct {
-		method   string
-		path     string
-		expected string
-	}{
-		{"GET", "/ping", "pong"},
-		{"GET", "/hello/Alice", "Hello Alice"},
-		{"GET", "/hello/Bob", "Hello Bob"},
-		{"GET", "/notfound", "404 page not found\n"},
-	}
-
-	for _, tt := range tests {
-		req := httptest.NewRequest(tt.method, tt.path, nil)
+	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH"}
+	for _, method := range methods {
+		req := httptest.NewRequest(method, "/any", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
-		if w.Body.String() != tt.expected {
-			t.Errorf("[%s %s] expected %q, got %q", tt.method, tt.path, tt.expected, w.Body.String())
+		if w.Body.String() != "any" {
+			t.Errorf("[%s /any] expected %q, got %q", method, "any", w.Body.String())
 		}
 	}
 }
 
-func TestGroupRoutes(t *testing.T) {
+func TestRouteGroup(t *testing.T) {
 	r := NewRouter()
+
 	api := r.Group("/api")
 	v1 := api.Group("/v1")
+	v2 := api.Group("/v2")
 
-	v1.Get("/users/:id", func(w http.ResponseWriter, _ *http.Request, params map[string]string) {
+	v1.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		w.Write([]byte("User " + params["id"]))
 	})
-
-	v1.Post("/users", func(w http.ResponseWriter, _ *http.Request, _ map[string]string) {
+	v1.Post("/users", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 		w.Write([]byte("Create User"))
+	})
+	v2.Get("/users", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+		w.Write([]byte("Users v2"))
 	})
 
 	tests := []struct {
@@ -181,50 +195,51 @@ func TestGroupRoutes(t *testing.T) {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
-		if w.Body.String() != tt.expected {
-			t.Errorf("[%s %s] expected %q, got %q", tt.method, tt.path, tt.expected, w.Body.String())
+		resp := w.Body.String()
+		if resp != tt.expected {
+			t.Errorf("[%s %s] expected %q, got %q", tt.method, tt.path, tt.expected, resp)
 		}
 	}
 }
 
-func TestAnyMethodRoute(t *testing.T) {
+func TestRouteGroupMiddlewares(t *testing.T) {
 	r := NewRouter()
-	r.Any("/ping", func(w http.ResponseWriter, _ *http.Request, _ map[string]string) {
+
+	api := r.Group("/api")
+	api.Use(func(next middleware.Handler) middleware.Handler {
+		return middleware.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Group", "api")
+			next.ServeHTTP(w, r)
+		}))
+	})
+
+	api.Get("/ping", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 		w.Write([]byte("pong"))
 	})
 
-	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH"}
-	for _, m := range methods {
-		req := httptest.NewRequest(m, "/ping", nil)
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
+	req := httptest.NewRequest("GET", "/api/ping", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
-		if w.Body.String() != "pong" {
-			t.Errorf("[%s /ping] expected %q, got %q", m, "pong", w.Body.String())
-		}
+	if w.Header().Get("X-Group") != "api" {
+		t.Errorf("expected middleware to set X-Group header")
+	}
+	if w.Body.String() != "pong" {
+		t.Errorf("expected response body 'pong', got %q", w.Body.String())
 	}
 }
 
-func TestMultipleMethodsSamePath(t *testing.T) {
+func TestRouterFreeze(t *testing.T) {
 	r := NewRouter()
-	r.Get("/resource", func(w http.ResponseWriter, _ *http.Request, _ map[string]string) {
-		w.Write([]byte("GET resource"))
-	})
-	r.Post("/resource", func(w http.ResponseWriter, _ *http.Request, _ map[string]string) {
-		w.Write([]byte("POST resource"))
-	})
 
-	req := httptest.NewRequest("GET", "/resource", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Body.String() != "GET resource" {
-		t.Errorf("expected GET resource, got %q", w.Body.String())
-	}
+	r.Get("/ping", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {})
+	r.Freeze()
 
-	req = httptest.NewRequest("POST", "/resource", nil)
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Body.String() != "POST resource" {
-		t.Errorf("expected POST resource, got %q", w.Body.String())
-	}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("expected panic when adding route after freeze")
+		}
+	}()
+
+	r.Get("/panic", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {})
 }

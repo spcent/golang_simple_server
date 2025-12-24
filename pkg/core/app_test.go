@@ -30,11 +30,9 @@ func TestNewDefaults(t *testing.T) {
 }
 
 func TestOptionsApply(t *testing.T) {
-	customMux := http.NewServeMux()
 	customRouter := router.NewRouter()
 
 	app := New(
-		WithMux(customMux),
 		WithRouter(customRouter),
 		WithAddr(":9090"),
 		WithEnvPath(".custom.env"),
@@ -43,9 +41,6 @@ func TestOptionsApply(t *testing.T) {
 		WithDebug(),
 	)
 
-	if app.mux != customMux {
-		t.Fatalf("custom mux should be set")
-	}
 	if app.router != customRouter {
 		t.Fatalf("custom router should be set")
 	}
@@ -66,7 +61,7 @@ func TestOptionsApply(t *testing.T) {
 	}
 }
 
-func TestUseMiddlewareWrapsRouterAndMux(t *testing.T) {
+func TestUseMiddlewareAppliedAfterSetup(t *testing.T) {
 	app := New()
 
 	app.Get("/router", func(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +80,11 @@ func TestUseMiddlewareWrapsRouterAndMux(t *testing.T) {
 		}))
 	})
 
+	if err := app.setupServer(); err != nil {
+		t.Fatalf("setupServer returned error: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
 	tests := []struct {
 		path     string
 		expected string
@@ -92,6 +92,7 @@ func TestUseMiddlewareWrapsRouterAndMux(t *testing.T) {
 		{path: "/router", expected: "router"},
 		{path: "/mux", expected: "mux"},
 	}
+	tmpFile.Close()
 
 	for _, tt := range tests {
 		req := httptest.NewRequest(http.MethodGet, tt.path, nil)
@@ -150,4 +151,17 @@ func TestSetupServerBuildsHTTPServer(t *testing.T) {
 	if app.httpServer.Handler == nil {
 		t.Fatalf("httpServer handler should not be nil")
 	}
+}
+
+func TestUseAfterStartPanics(t *testing.T) {
+	app := New()
+	app.started = true
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic when adding middleware after start")
+		}
+	}()
+
+	app.Use(func(next middleware.Handler) middleware.Handler { return next })
 }

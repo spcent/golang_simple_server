@@ -55,9 +55,6 @@ func New(options ...Option) *App {
 The framework uses the function option pattern to configure App instances, providing the following option functions:
 
 ```go
-// WithMux sets the HTTP multiplexer
-func WithMux(mux *http.ServeMux) Option
-
 // WithRouter sets the router
 func WithRouter(router *router.Router) Option
 
