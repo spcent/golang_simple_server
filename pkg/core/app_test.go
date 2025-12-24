@@ -170,3 +170,69 @@ func TestUseAfterStartPanics(t *testing.T) {
 
 	app.Use(func(next middleware.Handler) middleware.Handler { return next })
 }
+
+func TestConfigureWebSocketRequiresSecret(t *testing.T) {
+	app := New()
+	if _, err := app.ConfigureWebSocketWithOptions(WebSocketConfig{}); err == nil {
+		t.Fatalf("expected error when secret is missing")
+	}
+}
+
+func TestBroadcastAuthAndToggle(t *testing.T) {
+	secret := []byte("super-secret")
+
+	// Non-debug mode requires authorization
+	config := DefaultWebSocketConfig()
+	config.Secret = secret
+	config.BroadcastPath = "/broadcast"
+	config.BroadcastEnabled = true
+
+	app := New()
+	if _, err := app.ConfigureWebSocketWithOptions(config); err != nil {
+		t.Fatalf("configure websocket failed: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/broadcast", strings.NewReader("hello"))
+	app.Router().ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized without secret, got %d", rr.Code)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/broadcast", strings.NewReader("hello"))
+	req.Header.Set("Authorization", "Bearer "+string(secret))
+	app.Router().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected success when authorized, got %d", rr.Code)
+	}
+
+	// Debug mode bypasses broadcast auth
+	debugApp := New(WithDebug())
+	debugConfig := config
+	if _, err := debugApp.ConfigureWebSocketWithOptions(debugConfig); err != nil {
+		t.Fatalf("configure websocket failed: %v", err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/broadcast", strings.NewReader("hello"))
+	debugApp.Router().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected success in debug without auth, got %d", rr.Code)
+	}
+
+	// Disable broadcast endpoint
+	disabled := New()
+	disabledConfig := config
+	disabledConfig.BroadcastEnabled = false
+	if _, err := disabled.ConfigureWebSocketWithOptions(disabledConfig); err != nil {
+		t.Fatalf("configure websocket failed: %v", err)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, config.BroadcastPath, strings.NewReader("hello"))
+	disabled.Router().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected not found when broadcast disabled, got %d", rr.Code)
+	}
+}

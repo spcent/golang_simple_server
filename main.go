@@ -48,10 +48,12 @@ func main() {
 	})
 
 	// Configure WebSocket with custom secret for JWT authentication
-	// app.ConfigureWebSocketWithOptions(core.WebSocketConfig{
+	// _, _ = app.ConfigureWebSocketWithOptions(core.WebSocketConfig{
 	// 	Secret: []byte("your-secure-jwt-secret"),
 	// })
-	app.ConfigureWebSocket()
+	if _, err := app.ConfigureWebSocket(); err != nil {
+		panic(err)
+	}
 
 	// Register routes via handlers package
 	handlers.RegisterRoutes(app.Router())
