@@ -217,6 +217,42 @@ Execution order:
 6. Middleware2's post-processing logic
 7. Middleware1's post-processing logic
 
+Practical chain layout when mixing global, group, and per-route middleware:
+
+```go
+// Global middleware registered on the App
+app.EnableLogging()
+app.EnableRecovery()
+
+api := app.Router().Group("/api")
+
+// Group-specific middleware (only runs for /api/* routes)
+authz := middleware.FromFuncMiddleware(func(next http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        if r.Header.Get("X-Trace") == "" {
+            http.Error(w, "missing trace id", http.StatusBadRequest)
+            return
+        }
+        next(w, r)
+    }
+})
+api.Use(authz)
+
+// Per-route middleware is chained manually when needed.
+metrics := middleware.FromHTTPHandlerMiddleware(func(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        start := time.Now()
+        next.ServeHTTP(w, r)
+        log.Infof("latency=%s", time.Since(start))
+    })
+})
+
+api.GetFunc("/orders/:id", middleware.NewChain(metrics).ApplyFunc(func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
+    w.Write([]byte("order=" + params["id"]))
+}))
+```
+
 ## 7. Middleware Best Practices
 
 ### 7.1 Middleware Design Principles

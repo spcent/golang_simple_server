@@ -362,6 +362,40 @@ r.Init()
 r.Print(os.Stdout)
 ```
 
+### 9.3 Route grouping with middleware pipelines
+
+Route groups can carry their own middleware stack. The outer router middleware runs first, followed by group middleware, and finally the handler:
+
+```go
+r := router.NewRouter()
+
+// Global middleware (applies to all requests)
+r.Use(middleware.Logging(log.NewGLogger(), nil, nil))
+r.Use(middleware.RateLimit(50, 100, time.Minute, 5*time.Minute))
+
+// API group with auth + audit middleware
+api := r.Group("/api")
+auth := middleware.FromFuncMiddleware(func(next http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, req *http.Request) {
+        if req.Header.Get("X-Token") == "" {
+            http.Error(w, "unauthorized", http.StatusUnauthorized)
+            return
+        }
+        next(w, req)
+    }
+})
+api.Use(auth, middleware.FromHTTPHandlerMiddleware(middleware.RecoveryMiddleware))
+
+// Nested group inherits parent middleware and adds version-specific logic.
+v1 := api.Group("/v1")
+v1.GetFunc("/orders/:id", func(w http.ResponseWriter, req *http.Request) {
+    params := router.ParamsFromContext(req.Context())
+    w.Write([]byte("order=" + params["id"]))
+})
+
+r.Init()
+```
+
 ## 10. Summary
 
 The Router component is a core part of the Go Simple Server framework, providing efficient and flexible routing functionality. Through this documentation, you should now understand the main features and usage methods of the router. In actual projects, reasonably organizing and using routes can make your code clearer and more maintainable.
