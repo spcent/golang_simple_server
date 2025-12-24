@@ -42,6 +42,7 @@ type App struct {
 	router      *router.Router          // HTTP router
 	wsHub       *ws.Hub                 // WebSocket hub
 	started     bool                    // Whether the app has started
+	envLoaded   bool                    // Whether environment variables have been loaded
 	httpServer  *http.Server            // HTTP server instance
 	middlewares []middleware.Middleware // Stored middleware for all routes
 	handler     http.Handler            // Combined handler with middleware applied
@@ -284,7 +285,7 @@ func (a *App) Boot() error {
 
 // loadEnv loads environment variables from .env file if it exists
 func (a *App) loadEnv() error {
-	if a.config.EnvFile == "" {
+	if a.envLoaded || a.config.EnvFile == "" {
 		return nil
 	}
 
@@ -296,6 +297,8 @@ func (a *App) loadEnv() error {
 			return err
 		}
 	}
+
+	a.envLoaded = true
 	return nil
 }
 
@@ -410,6 +413,10 @@ func DefaultWebSocketConfig() WebSocketConfig {
 // ConfigureWebSocket configures WebSocket support for the app
 // It returns the Hub for advanced usage
 func (a *App) ConfigureWebSocket() (*ws.Hub, error) {
+	if err := a.loadEnv(); err != nil {
+		return nil, err
+	}
+
 	return a.ConfigureWebSocketWithOptions(DefaultWebSocketConfig())
 }
 
