@@ -115,7 +115,8 @@ func (a *App) Router() *router.Router
 r := app.Router()
 
 // 注册带参数的路由
-r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
     id := params["id"]
     w.Write([]byte(`{"user_id":"` + id + `"}`))
 })
@@ -314,12 +315,13 @@ import (
 type UserHandler struct{}
 
 func (h *UserHandler) Register(r *router.Router) {
-    r.Get("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/users", func(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "application/json")
         fmt.Fprintln(w, `{"users": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]}`)
     })
     
-    r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request) {
+        params := router.ParamsFromContext(r.Context())
         id := params["id"]
         w.Header().Set("Content-Type", "application/json")
         fmt.Fprintf(w, `{"user": {"id": %s, "name": "User %s"}}`, id, id)

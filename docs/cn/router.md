@@ -81,11 +81,11 @@ Any(path string, handler Handler)
 示例：
 
 ```go
-router.Get("/hello", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+router.Get("/hello", func(w http.ResponseWriter, r *http.Request) {
     w.Write([]byte(`{"message":"Hello, World!"}`))
 })
 
-router.Post("/submit", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+router.Post("/submit", func(w http.ResponseWriter, r *http.Request) {
     // 处理 POST 请求
 })
 ```
@@ -95,13 +95,15 @@ router.Post("/submit", func(w http.ResponseWriter, r *http.Request, params map[s
 框架支持在路由中定义参数，以 `:` 为前缀：
 
 ```go
-router.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+router.Get("/users/:id", func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
     id := params["id"]
     w.Write([]byte(`{"user_id":"` + id + `"}`))
 })
 
 // 支持多个参数
-router.Get("/users/:id/posts/:postId", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+router.Get("/users/:id/posts/:postId", func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
     id := params["id"]
     postId := params["postId"]
     w.Write([]byte(`{"user_id":"` + id + `", "post_id":"` + postId + `"}`))
@@ -168,7 +170,7 @@ func (h *UserHandler) Register(r *router.Router) {
 }
 
 // 实现具体的处理方法
-func (h *UserHandler) List(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
     // 实现用户列表逻辑
 }
 
@@ -305,12 +307,13 @@ Router 实现了多项性能优化措施：
 r := router.NewRouter()
 
 // 注册基本路由
-r.Get("/", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+r.Get("/", func(w http.ResponseWriter, r *http.Request) {
     w.Write([]byte("Welcome!"))
 })
 
 // 注册带参数的路由
-r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
     w.Write([]byte(`User ID: ` + params["id"]))
 })
 

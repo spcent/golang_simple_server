@@ -21,10 +21,10 @@ Key Features:
 │   ├── health.go        # Health check related routes
 │   └── user.go          # User related routes
 ├── pkg/                 # Framework core packages
-│   ├── foundation/      # Application core
+│   ├── core/      # Application core
 │   ├── router/          # Routing system
 │   ├── middleware/      # Middleware
-│   └── glog/            # Logging system
+│   └── log/            # Logging system
 └── docs/                # Documentation directory
 ```
 
@@ -71,12 +71,13 @@ func main() {
     r := app.Router()
     
     // Register basic routes
-    r.Get("/hello", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/hello", func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte(`{"message":"Hello, World!"}`))
     })
     
     // Register routes with parameters
-    r.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request) {
+        params := router.ParamsFromContext(r.Context())
         name := params["name"]
         w.Write([]byte(`{"message":"Hello, ` + name + `!"}`))
     })
@@ -139,7 +140,8 @@ Router is the routing component of the framework, implementing high-performance 
 The framework supports path parameters, identified by the `:` prefix, such as `/users/:id`.
 
 ```go
-r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
     id := params["id"]
     w.Write([]byte(`{"user_id":"` + id + `"}`))
 })
@@ -164,27 +166,27 @@ The framework provides convenient RESTful resource route registration methods:
 // Define resource controller
 type UserController struct{}
 
-func (c *UserController) Index(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (c *UserController) Index(w http.ResponseWriter, r *http.Request) {
     // GET /users - List all users
 }
 
-func (c *UserController) Create(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (c *UserController) Create(w http.ResponseWriter, r *http.Request) {
     // POST /users - Create new user
 }
 
-func (c *UserController) Show(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (c *UserController) Show(w http.ResponseWriter, r *http.Request) {
     // GET /users/:id - Get single user
 }
 
-func (c *UserController) Update(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (c *UserController) Update(w http.ResponseWriter, r *http.Request) {
     // PUT /users/:id - Update user
 }
 
-func (c *UserController) Delete(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (c *UserController) Delete(w http.ResponseWriter, r *http.Request) {
     // DELETE /users/:id - Delete user
 }
 
-func (c *UserController) Patch(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (c *UserController) Patch(w http.ResponseWriter, r *http.Request) {
     // PATCH /users/:id - Partially update user
 }
 
@@ -230,7 +232,7 @@ Handlers are responsible for processing specific HTTP requests and returning res
 ### 5.1 Directly Registering Handler Functions
 
 ```go
-r.Get("/hello", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+r.Get("/hello", func(w http.ResponseWriter, r *http.Request) {
     w.Write([]byte(`{"message":"Hello, World!"}`))
 })
 ```
@@ -243,11 +245,11 @@ type UserHandler struct{}
 
 // Implement Register method
 func (h *UserHandler) Register(r *router.Router) {
-    r.Get("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/users", func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte("User List"))
     })
     
-    r.Post("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Post("/users", func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte("Create User"))
     })
 }
@@ -262,10 +264,11 @@ The framework supports loading environment variables through `.env` files:
 
 ### 6.1 Creating .env File
 
+Create a `.env` file in the project root directory with the following content:
+
 ```
 APP_DEBUG=true
 AUTH_TOKEN=my-secret-token
-SERVER_PORT=8080
 ```
 
 ### 6.2 Custom .env File Path
@@ -308,12 +311,13 @@ import (
 type UserHandler struct{}
 
 func (h *UserHandler) Register(r *router.Router) {
-    r.Get("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/users", func(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "application/json")
         fmt.Fprintln(w, `{"users": ["user1", "user2", "user3"]}`)
     })
-    
-    r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+
+    r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request) {
+        params := router.ParamsFromContext(r.Context())
         id := params["id"]
         w.Header().Set("Content-Type", "application/json")
         fmt.Fprintf(w, `{"user_id": "%s"}`, id)
@@ -333,7 +337,7 @@ func main() {
     r.Register(&UserHandler{})
     
     // Register direct route
-    r.Get("/", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/", func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte("Welcome to Go Simple Server!"))
     })
     

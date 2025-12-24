@@ -21,10 +21,10 @@ Go Simple Server 是一个轻量级的 HTTP 服务器框架，提供了简洁的
 │   ├── health.go        # 健康检查相关路由
 │   └── user.go          # 用户相关路由
 ├── pkg/                 # 框架核心包
-│   ├── foundation/      # 应用程序核心
+│   ├── core/      # 应用程序核心
 │   ├── router/          # 路由系统
 │   ├── middleware/      # 中间件
-│   └── glog/            # 日志系统
+│   └── log/            # 日志系统
 └── docs/                # 文档目录
 ```
 
@@ -37,18 +37,18 @@ package main
 
 import (
     "net/http"
-    "github.com/spcent/golang_simple_server/pkg/foundation"
+    "github.com/spcent/golang_simple_server/pkg/core"
 )
 
 func main() {
     // 创建应用实例
-    app := foundation.New()
-    
+    app := core.New()
+
     // 注册路由
     app.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte("pong"))
     })
-    
+
     // 启动应用
     app.Boot()
 }
@@ -61,26 +61,27 @@ package main
 
 import (
     "net/http"
-    "github.com/spcent/golang_simple_server/pkg/foundation"
+    "github.com/spcent/golang_simple_server/pkg/core"
 )
 
 func main() {
-    app := foundation.New()
-    
+    app := core.New()
+
     // 获取路由器并注册路由
     r := app.Router()
-    
+  
     // 注册基本路由
-    r.Get("/hello", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/hello", func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte(`{"message":"Hello, World!"}`))
     })
-    
+
     // 注册带参数的路由
-    r.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request) {
+        params := router.ParamsFromContext(r.Context())
         name := params["name"]
         w.Write([]byte(`{"message":"Hello, ` + name + `!"}`))
     })
-    
+
     // 应用中间件
     app.Use(app.Logging(), app.Auth())
     
@@ -139,7 +140,8 @@ Router 是框架的路由组件，基于 Trie 树实现高性能的路由匹配�
 框架支持路径参数，以 `:` 前缀标识，如 `/users/:id`。
 
 ```go
-r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
     id := params["id"]
     w.Write([]byte(`{"user_id":"` + id + `"}`))
 })
@@ -164,27 +166,27 @@ api.Get("/posts", postListHandler)
 // 定义资源控制器
 type UserController struct{}
 
-func (c *UserController) Index(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (c *UserController) Index(w http.ResponseWriter, r *http.Request) {
     // GET /users - 列出所有用户
 }
 
-func (c *UserController) Create(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (c *UserController) Create(w http.ResponseWriter, r *http.Request) {
     // POST /users - 创建新用户
 }
 
-func (c *UserController) Show(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (c *UserController) Show(w http.ResponseWriter, r *http.Request) {
     // GET /users/:id - 获取单个用户
 }
 
-func (c *UserController) Update(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (c *UserController) Update(w http.ResponseWriter, r *http.Request) {
     // PUT /users/:id - 更新用户
 }
 
-func (c *UserController) Delete(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (c *UserController) Delete(w http.ResponseWriter, r *http.Request) {
     // DELETE /users/:id - 删除用户
 }
 
-func (c *UserController) Patch(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (c *UserController) Patch(w http.ResponseWriter, r *http.Request) {
     // PATCH /users/:id - 部分更新用户
 }
 
@@ -230,7 +232,7 @@ app.Use(CustomMiddleware)
 ### 5.1 直接注册处理函数
 
 ```go
-r.Get("/hello", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+r.Get("/hello", func(w http.ResponseWriter, r *http.Request) {
     w.Write([]byte(`{"message":"Hello, World!"}`))
 })
 ```
@@ -243,11 +245,11 @@ type UserHandler struct{}
 
 // 实现 Register 方法
 func (h *UserHandler) Register(r *router.Router) {
-    r.Get("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/users", func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte("User List"))
     })
     
-    r.Post("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Post("/users", func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte("Create User"))
     })
 }
@@ -308,12 +310,13 @@ import (
 type UserHandler struct{}
 
 func (h *UserHandler) Register(r *router.Router) {
-    r.Get("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/users", func(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "application/json")
         fmt.Fprintln(w, `{"users": ["user1", "user2", "user3"]}`)
     })
     
-    r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request) {
+        params := router.ParamsFromContext(r.Context())
         id := params["id"]
         w.Header().Set("Content-Type", "application/json")
         fmt.Fprintf(w, `{"user_id": "%s"}`, id)
@@ -333,7 +336,7 @@ func main() {
     r.Register(&UserHandler{})
     
     // 注册直接路由
-    r.Get("/", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+    r.Get("/", func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte("Welcome to Go Simple Server!"))
     })
     

@@ -7,6 +7,7 @@ import (
 
 	"github.com/spcent/golang_simple_server/handlers"
 	"github.com/spcent/golang_simple_server/pkg/core"
+	log "github.com/spcent/golang_simple_server/pkg/log"
 )
 
 func main() {
@@ -48,11 +49,8 @@ func main() {
 	})
 
 	// Configure WebSocket with custom secret for JWT authentication
-	// _, _ = app.ConfigureWebSocketWithOptions(core.WebSocketConfig{
-	// 	Secret: []byte("your-secure-jwt-secret"),
-	// })
 	if _, err := app.ConfigureWebSocket(); err != nil {
-		panic(err)
+		app.Logger().Error("Failed to configure WebSocket", log.Fields{"error": err})
 	}
 
 	// Register routes via handlers package
@@ -66,5 +64,7 @@ func main() {
 	// Boot the application
 	// HTTPS can also be enabled via command line flags:
 	// ./simple -tls -tls-cert ./cert.pem -tls-key ./key.pem
-	app.Boot()
+	if err := app.Boot(); err != nil {
+		app.Logger().Error("Failed to boot application", log.Fields{"error": err})
+	}
 }

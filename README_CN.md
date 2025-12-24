@@ -31,14 +31,18 @@ make run  # 构建并启动服务（默认端口:8080）
 ```
 
 ## 路由定义
-通过 router.(Get|Post|Delete|Put) 函数注册带参数的路由（示例在 main.go ）：
+通过 app.(Get|Post|Delete|Put) 函数注册带参数的路由（示例在 main.go ）：
 
 ```go
-r.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
-    // 使用params["name"]获取路径参数
+app.Get("/hello/:name", func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
+    // Access params["name"]
+    fmt.Fprintf(w, `{"message":"Hello, %s!"}`, params["name"])
 })
-r.Get("/users/:id/posts/:postID", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
-    // 使用params["id"]和params["postID"]
+app.Get("/users/:id/posts/:postID", func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
+    // Access params["id"] and params["postID"]
+    fmt.Fprintf(w, `{"message":"User %s, Post %s"}`, params["id"], params["postID"])
 })
 ```
 

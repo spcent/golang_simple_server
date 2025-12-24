@@ -81,11 +81,11 @@ Any(path string, handler Handler)
 Example:
 
 ```go
-router.Get("/hello", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+router.Get("/hello", func(w http.ResponseWriter, r *http.Request) {
     w.Write([]byte(`{"message":"Hello, World!"}`))
 })
 
-router.Post("/submit", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+router.Post("/submit", func(w http.ResponseWriter, r *http.Request) {
     // Handle POST request
 })
 ```
@@ -95,13 +95,15 @@ router.Post("/submit", func(w http.ResponseWriter, r *http.Request, params map[s
 The framework supports defining parameters in routes, prefixed with `:`:
 
 ```go
-router.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+router.Get("/users/:id", func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
     id := params["id"]
     w.Write([]byte(`{"user_id":"` + id + `"}`))
 })
 
 // Support multiple parameters
-router.Get("/users/:id/posts/:postId", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+router.Get("/users/:id/posts/:postId", func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
     id := params["id"]
     postId := params["postId"]
     w.Write([]byte(`{"user_id":"` + id + `", "post_id":"` + postId + `"}`))
@@ -169,7 +171,7 @@ func (h *UserHandler) Register(r *router.Router) {
 }
 
 // Implement specific handling methods
-func (h *UserHandler) List(w http.ResponseWriter, r *http.Request, params map[string]string) {
+func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
     // Implement user list logic
 }
 
@@ -306,12 +308,13 @@ Router implements several performance optimization measures:
 r := router.NewRouter()
 
 // Register basic routes
-r.Get("/", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+r.Get("/", func(w http.ResponseWriter, r *http.Request) {
     w.Write([]byte("Welcome!"))
 })
 
 // Register routes with parameters
-r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+r.Get("/users/:id", func(w http.ResponseWriter, r *http.Request) {
+    params := router.ParamsFromContext(r.Context())
     w.Write([]byte(`User ID: ` + params["id"]))
 })
 
