@@ -21,22 +21,12 @@ const (
 	ANY    = "ANY"
 )
 
-// Handler defines the function signature for handling HTTP requests with route parameters.
-type Handler func(http.ResponseWriter, *http.Request, map[string]string)
+// Handler is an alias to the standard http.Handler for route handlers.
+// Use HandlerFunc when registering inline functions.
+type Handler = http.Handler
 
-// HTTPHandlerAdapter adapts a standard http.Handler to the router Handler type
-func HTTPHandlerAdapter(h http.Handler) Handler {
-	return func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
-		h.ServeHTTP(w, r)
-	}
-}
-
-// HTTPHandlerFuncAdapter adapts a standard http.HandlerFunc to the router Handler type
-func HTTPHandlerFuncAdapter(h http.HandlerFunc) Handler {
-	return func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
-		h(w, r)
-	}
-}
+// HandlerFunc is an alias to the standard http.HandlerFunc for convenience.
+type HandlerFunc = http.HandlerFunc
 
 type RouteRegistrar interface {
 	Register(r *Router)
@@ -89,6 +79,11 @@ func ParamsFromContext(ctx context.Context) map[string]string {
 	if params, ok := ctx.Value(paramsContextKey{}).(map[string]string); ok {
 		return params
 	}
+
+	if rc, ok := ctx.Value(requestContextKey{}).(RequestContext); ok {
+		return rc.Params
+	}
+
 	return nil
 }
 
@@ -374,8 +369,25 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // applyMiddlewareAndServe applies middleware chain to the handler and serves the request
 func (r *Router) applyMiddlewareAndServe(w http.ResponseWriter, req *http.Request, params map[string]string, handler Handler, routeMiddlewares []middleware.Middleware) {
 	reqWithParams := req
+	ctx := req.Context()
+
 	if len(params) > 0 {
-		ctx := context.WithValue(req.Context(), paramsContextKey{}, params)
+		ctx = context.WithValue(ctx, paramsContextKey{}, params)
+	}
+
+	// Always install a RequestContext so downstream code has a predictable place to read/write
+	// request-scoped data without custom type assertions.
+	existingRC, ok := ctx.Value(requestContextKey{}).(RequestContext)
+	if !ok {
+		existingRC = RequestContext{}
+	}
+
+	if len(params) > 0 {
+		existingRC.Params = params
+	}
+
+	ctx = context.WithValue(ctx, requestContextKey{}, existingRC)
+	if ctx != req.Context() {
 		reqWithParams = req.WithContext(ctx)
 	}
 
@@ -383,16 +395,12 @@ func (r *Router) applyMiddlewareAndServe(w http.ResponseWriter, req *http.Reques
 	combined = append(combined, routeMiddlewares...)
 
 	if len(combined) == 0 {
-		handler(w, reqWithParams, params)
+		handler.ServeHTTP(w, reqWithParams)
 		return
 	}
 
 	chain := middleware.NewChain(combined...)
-	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler(w, r, params)
-	})
-
-	wrappedHandler := chain.Apply(httpHandler)
+	wrappedHandler := chain.Apply(handler)
 	wrappedHandler.ServeHTTP(w, reqWithParams)
 }
 
@@ -502,12 +510,12 @@ func (r *Router) Any(path string, h Handler)    { r.AddRoute(ANY, path, h) }
 
 // HandleFunc registers a standard http.HandlerFunc for the given path and method
 func (r *Router) HandleFunc(method, path string, h http.HandlerFunc) {
-	r.AddRoute(method, path, HTTPHandlerFuncAdapter(h))
+	r.AddRoute(method, path, h)
 }
 
 // Handle registers a standard http.Handler for the given path and method
 func (r *Router) Handle(method, path string, h http.Handler) {
-	r.AddRoute(method, path, HTTPHandlerAdapter(h))
+	r.AddRoute(method, path, h)
 }
 
 // GetFunc registers a GET route with a standard http.HandlerFunc
@@ -544,12 +552,12 @@ func (r *Router) AnyFunc(path string, h http.HandlerFunc) {
 func (r *Router) Resource(path string, c ResourceController) {
 	path = strings.TrimSuffix(path, "/")
 
-	r.Get(path, c.Index)
-	r.Post(path, c.Create)
-	r.Get(path+"/:id", c.Show)
-	r.Put(path+"/:id", c.Update)
-	r.Delete(path+"/:id", c.Delete)
-	r.Patch(path+"/:id", c.Patch)
+	r.Get(path, http.HandlerFunc(c.Index))
+	r.Post(path, http.HandlerFunc(c.Create))
+	r.Get(path+"/:id", http.HandlerFunc(c.Show))
+	r.Put(path+"/:id", http.HandlerFunc(c.Update))
+	r.Delete(path+"/:id", http.HandlerFunc(c.Delete))
+	r.Patch(path+"/:id", http.HandlerFunc(c.Patch))
 }
 
 // Print prints all registered routes grouped by method.

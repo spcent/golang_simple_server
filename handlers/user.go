@@ -10,7 +10,7 @@ import (
 type UserHandler struct{}
 
 func (u *UserHandler) Register(r *router.Router) {
-	r.Get("/users", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	r.GetFunc("/users", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintln(w, "User List")
 	})

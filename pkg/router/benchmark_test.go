@@ -11,20 +11,23 @@ func createTestRouter() *Router {
 	r := NewRouter()
 
 	// Static routes
-	r.AddRoute(GET, "/about", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	r.AddRoute(GET, "/about", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("about"))
-	})
-	r.AddRoute(GET, "/contact", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	}))
+	r.AddRoute(GET, "/contact", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("contact"))
-	})
+	}))
 
 	// Parameterized routes
-	r.AddRoute(GET, "/hello/:name", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
-		w.Write([]byte("Hello " + params["name"]))
-	})
-	r.AddRoute(GET, "/users/:id/books/:bookId", func(w http.ResponseWriter, r *http.Request, params map[string]string) {
-		w.Write([]byte("User " + params["id"] + " Book " + params["bookId"]))
-	})
+	r.AddRoute(GET, "/hello/:name", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name, _ := Param(r, "name")
+		w.Write([]byte("Hello " + name))
+	}))
+	r.AddRoute(GET, "/users/:id/books/:bookId", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, _ := Param(r, "id")
+		bookID, _ := Param(r, "bookId")
+		w.Write([]byte("User " + id + " Book " + bookID))
+	}))
 
 	return r
 }

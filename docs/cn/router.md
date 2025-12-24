@@ -19,13 +19,11 @@ Handler 是路由处理函数的类型定义：
 
 ```go
 // Handler 定义了处理 HTTP 请求的函数签名
-type Handler func(http.ResponseWriter, *http.Request, map[string]string)
+type Handler = http.Handler
+type HandlerFunc = http.HandlerFunc
 ```
 
-参数说明：
-- `http.ResponseWriter`: 用于写入 HTTP 响应
-- `*http.Request`: 包含客户端请求信息
-- `map[string]string`: 包含从 URL 路径中提取的参数
+处理函数签名与标准库保持一致，直接从 `r.Context()` 读取路由参数：可通过 `Param(r, "id")` 或 `RequestContextFrom(r.Context())` 获取。
 
 ### 2.2 RouteRegistrar 接口
 
@@ -140,12 +138,12 @@ Resource 方法提供了快速注册 RESTful 资源路由的功能：
 // 注意：这是一个隐式接口，不需要显式声明实现
 // 只需实现相应的方法即可
 type ResourceController interface {
-    Index(w http.ResponseWriter, r *http.Request, params map[string]string)    // GET    /resources
-    Create(w http.ResponseWriter, r *http.Request, params map[string]string)   // POST   /resources
-    Show(w http.ResponseWriter, r *http.Request, params map[string]string)     // GET    /resources/:id
-    Update(w http.ResponseWriter, r *http.Request, params map[string]string)   // PUT    /resources/:id
-    Delete(w http.ResponseWriter, r *http.Request, params map[string]string)   // DELETE /resources/:id
-    Patch(w http.ResponseWriter, r *http.Request, params map[string]string)    // PATCH  /resources/:id
+    Index(context.Context, http.ResponseWriter, *http.Request)  // GET    /resources
+    Create(context.Context, http.ResponseWriter, *http.Request) // POST   /resources
+    Show(context.Context, http.ResponseWriter, *http.Request)   // GET    /resources/:id
+    Update(context.Context, http.ResponseWriter, *http.Request) // PUT    /resources/:id
+    Delete(context.Context, http.ResponseWriter, *http.Request) // DELETE /resources/:id
+    Patch(context.Context, http.ResponseWriter, *http.Request)  // PATCH  /resources/:id
 }
 
 // 注册资源路由
