@@ -15,7 +15,7 @@ func TestHealthAndReady(t *testing.T) {
 	(&HealthHandler{}).Register(r)
 
 	// Liveness should always return 200.
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	resp := httptest.NewRecorder()
 	r.ServeHTTP(resp, req)
 	if resp.Code != http.StatusOK {
@@ -23,7 +23,7 @@ func TestHealthAndReady(t *testing.T) {
 	}
 
 	// Readiness should fail before ready.
-	readyReq := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	readyReq := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	readyResp := httptest.NewRecorder()
 	r.ServeHTTP(readyResp, readyReq)
 	if readyResp.Code != http.StatusServiceUnavailable {
