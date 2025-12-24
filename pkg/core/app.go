@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/spcent/golang_simple_server/pkg/config"
-	glog "github.com/spcent/golang_simple_server/pkg/log"
+	log "github.com/spcent/golang_simple_server/pkg/log"
 	"github.com/spcent/golang_simple_server/pkg/middleware"
 	ws "github.com/spcent/golang_simple_server/pkg/net/websocket"
 	"github.com/spcent/golang_simple_server/pkg/router"
@@ -42,6 +42,10 @@ type App struct {
 	httpServer  *http.Server            // HTTP server instance
 	middlewares []middleware.Middleware // Stored middleware for all routes
 	handler     http.Handler            // Combined handler with middleware applied
+
+	logger           log.StructuredLogger
+	metricsCollector middleware.MetricsCollector
+	tracer           middleware.Tracer
 }
 
 // Option defines a function type for configuring the App
@@ -101,6 +105,29 @@ func WithDebug() Option {
 	}
 }
 
+// WithLogger sets a custom logger for the App.
+func WithLogger(logger log.StructuredLogger) Option {
+	return func(a *App) {
+		if logger != nil {
+			a.logger = logger
+		}
+	}
+}
+
+// WithMetricsCollector sets a metrics collector hook for observability middleware.
+func WithMetricsCollector(collector middleware.MetricsCollector) Option {
+	return func(a *App) {
+		a.metricsCollector = collector
+	}
+}
+
+// WithTracer sets a tracer hook for observability middleware.
+func WithTracer(tracer middleware.Tracer) Option {
+	return func(a *App) {
+		a.tracer = tracer
+	}
+}
+
 // New creates a new App instance with the provided options
 // Defaults are applied if no options are provided
 func New(options ...Option) *App {
@@ -113,6 +140,7 @@ func New(options ...Option) *App {
 			ShutdownTimeout: 5 * time.Second,
 		},
 		router: router.NewRouter(),
+		logger: log.NewGLogger(),
 	}
 
 	// Apply all provided options
@@ -214,13 +242,20 @@ func (a *App) Router() *router.Router {
 	return a.router
 }
 
+// Logger returns the configured application logger.
+func (a *App) Logger() log.StructuredLogger {
+	return a.logger
+}
+
 // Boot initializes and starts the application
 // It sets up the router with the mux and starts the HTTP server
 func (a *App) Boot() error {
-	// Initialize logger
-	glog.Init()
-	defer glog.Flush()
-	defer glog.Close()
+	if lifecycle, ok := a.logger.(log.Lifecycle); ok {
+		if err := lifecycle.Start(context.Background()); err != nil {
+			return err
+		}
+		defer lifecycle.Stop(context.Background())
+	}
 
 	// Load environment variables from .env file if it exists
 	if err := a.loadEnv(); err != nil {
@@ -251,10 +286,10 @@ func (a *App) loadEnv() error {
 	}
 
 	if _, err := os.Stat(a.config.EnvFile); err == nil {
-		glog.Infof("Load .env file: %s", a.config.EnvFile)
+		a.logger.Info("Load .env file", log.Fields{"path": a.config.EnvFile})
 		err := config.LoadEnv(a.config.EnvFile, true)
 		if err != nil {
-			glog.Errorf("Load .env failed: %v", err)
+			a.logger.Error("Load .env failed", log.Fields{"error": err})
 			return err
 		}
 	}
@@ -290,7 +325,7 @@ func (a *App) startServer() error {
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 		<-sig
 
-		glog.Info("SIGTERM received, shutting down...")
+		a.logger.Info("SIGTERM received, shutting down", nil)
 
 		timeout := a.config.ShutdownTimeout
 		if timeout <= 0 {
@@ -300,20 +335,20 @@ func (a *App) startServer() error {
 		defer cancel()
 
 		if err := a.httpServer.Shutdown(ctx); err != nil {
-			glog.Errorf("Server shutdown error: %v", err)
+			a.logger.Error("Server shutdown error", log.Fields{"error": err})
 		}
 		close(idleConnsClosed)
 	}()
 
-	glog.Infof("Server running on %s", a.config.Addr)
+	a.logger.Info("Server running", log.Fields{"addr": a.config.Addr})
 
 	var err error
 	if a.config.TLS.Enabled {
 		if a.config.TLS.CertFile == "" || a.config.TLS.KeyFile == "" {
-			glog.Errorf("TLS enabled but certificate or key file not provided")
+			a.logger.Error("TLS enabled but certificate or key file not provided", nil)
 			return fmt.Errorf("TLS enabled but certificate or key file not provided")
 		}
-		glog.Infof("HTTPS enabled, using certificate: %s", a.config.TLS.CertFile)
+		a.logger.Info("HTTPS enabled", log.Fields{"cert": a.config.TLS.CertFile})
 		err = a.httpServer.ListenAndServeTLS(a.config.TLS.CertFile, a.config.TLS.KeyFile)
 	} else {
 		err = a.httpServer.ListenAndServe()
@@ -323,12 +358,12 @@ func (a *App) startServer() error {
 
 	// Stop WebSocket hub if it was created
 	if a.wsHub != nil {
-		glog.Info("Stopping WebSocket hub...")
+		a.logger.Info("Stopping WebSocket hub", nil)
 		a.wsHub.Stop()
 		a.wsHub = nil
 	}
 
-	glog.Info("Server stopped gracefully")
+	a.logger.Info("Server stopped gracefully", nil)
 	return err
 }
 
@@ -404,7 +439,7 @@ func (a *App) ConfigureWebSocketWithOptions(config WebSocketConfig) *ws.Hub {
 
 // EnableLogging enables the logging middleware
 func (a *App) EnableLogging() {
-	a.Use(middleware.FromFuncMiddleware(middleware.Logging))
+	a.Use(middleware.Logging(a.logger, a.metricsCollector, a.tracer))
 }
 
 // EnableAuth enables the auth middleware
