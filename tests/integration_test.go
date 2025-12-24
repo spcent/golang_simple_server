@@ -68,18 +68,15 @@ func TestIntegrationTLSWebSocketAndGracefulShutdown(t *testing.T) {
 	wsClient2 := newTLSWSClient(t, wsURL)
 	defer wsClient2.close()
 
+	// Allow both WebSocket connections to finish registering with the hub
+	time.Sleep(50 * time.Millisecond)
+
 	message := []byte("hello-room")
 	if err := wsClient1.sendFrame(ws.OpcodeText, true, message); err != nil {
 		t.Fatalf("write frame: %v", err)
 	}
 
-	op, received, err := wsClient2.readFrame()
-	if err != nil {
-		t.Fatalf("read frame: %v", err)
-	}
-	if op != ws.OpcodeText {
-		t.Fatalf("unexpected opcode: %d", op)
-	}
+	received := readNextDataFrame(t, wsClient2, 5*time.Second)
 	if string(received) != string(message) {
 		t.Fatalf("unexpected payload: %s", string(received))
 	}
@@ -190,6 +187,11 @@ type testWSClient struct {
 	br   *bufio.Reader
 	bw   *bufio.Writer
 }
+
+const (
+	opcodePing = 0x9
+	opcodePong = 0xA
+)
 
 func newTLSWSClient(t *testing.T, rawURL string) *testWSClient {
 	t.Helper()
@@ -350,4 +352,29 @@ func (c *testWSClient) readFrame() (byte, []byte, error) {
 
 func (c *testWSClient) close() {
 	_ = c.conn.Close()
+}
+
+func readNextDataFrame(t *testing.T, client *testWSClient, timeout time.Duration) []byte {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for data frame")
+		}
+
+		op, payload, err := client.readFrame()
+		if err != nil {
+			t.Fatalf("read frame: %v", err)
+		}
+
+		switch op {
+		case ws.OpcodeText, ws.OpcodeBinary:
+			return payload
+		case opcodePing, opcodePong:
+			continue
+		default:
+			t.Fatalf("unexpected opcode: %d", op)
+		}
+	}
 }
