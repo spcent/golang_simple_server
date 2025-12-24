@@ -3,86 +3,125 @@ name: Go CI/CD
 on:
   push:
     tags:
-      - 'v*.*.*'
-  release:
-    types: [ published ]
+      - "v*.*.*"
+
+concurrency:
+  group: go-cicd-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  ci:
-    name: CI - Test & Build Artifacts
+  test:
+    name: Test (once)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
-    strategy:
-      matrix:
-        os: [linux-latest, darwin-latest, windows-latest]
-        arch: [amd64, arm64]
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Set up Go 1.20+
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: 'stable'
+          go-version: "stable"
+          cache: true
 
-      - name: Check Go version
-        run: go version
+      - name: Show Go env
+        run: |
+          go version
+          go env
 
-      - name: Cache Go modules
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
-
-      - name: Install dependencies
+      - name: Download modules
         run: go mod download
 
       - name: Run tests
         run: go test ./... -v -cover
 
-      - name: Build binary
-        run: |
-          mkdir -p bin/${{ matrix.os }}/${{ matrix.arch }}
-          ext=""
-          GOOS_NAME=""
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            GOOS_NAME="windows"
-            ext=".exe"
-          else
-            GOOS_NAME=$(echo "${{ matrix.os }}" | sed 's/-latest//')
-          fi
-          echo "Building for $GOOS_NAME / ${{ matrix.arch }}"
-          GOOS=$GOOS_NAME GOARCH=${{ matrix.arch }} go build -o bin/myapp-${{ matrix.os }}-${{ matrix.arch }}$ext
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: myapp-${{ matrix.os }}-${{ matrix.arch }}
-          path: bin/
-
-  release:
-    name: Release
-    needs: ci
-    if: startsWith(github.ref, 'refs/tags/v')
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
     steps:
-      - name: Download all artifacts
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          cache: true
+
+      - name: Build
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+
+          APP_NAME="myapp"
+          VERSION="${GITHUB_REF_NAME}"
+          COMMIT="${GITHUB_SHA}"
+          DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          OUT_DIR="dist"
+          mkdir -p "${OUT_DIR}"
+
+          EXT=""
+          if [ "${GOOS}" = "windows" ]; then EXT=".exe"; fi
+
+          OUT_NAME="${APP_NAME}_${VERSION}_${GOOS}_${GOARCH}${EXT}"
+          OUT_PATH="${OUT_DIR}/${OUT_NAME}"
+
+          echo "Building ${OUT_NAME}"
+
+          # 注入版本信息（需要你在 main 包里定义对应变量；否则也不影响构建）
+          # var version, commit, date string
+          LDFLAGS="-s -w \
+            -X pkg.health.version=${VERSION} \
+            -X pkg.health.commit=${COMMIT} \
+            -X pkg.health.buildTime=${DATE}"
+
+          go build -trimpath -ldflags "${LDFLAGS}" -o "${OUT_PATH}" .
+
+          ls -lah "${OUT_PATH}"
+
+      - name: Upload artifact (single file)
+        uses: actions/upload-artifact@v4
+        with:
+          name: myapp_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 3
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
-          path: bin/
+          path: dist
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+      - name: List release files
+        run: |
+          set -euo pipefail
+          find dist -type f -maxdepth 2 -print -exec ls -lah {} \;
+
+      - name: Create GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
         with:
-          files: bin/**/*
+          files: dist/**/*
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
