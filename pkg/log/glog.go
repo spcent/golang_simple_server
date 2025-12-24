@@ -4,7 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	stdlog "log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -474,8 +474,8 @@ func Close() {
 }
 
 func CopyStandardLogTo(level Level) {
-	log.SetOutput(&logWriter{level: level})
-	log.SetFlags(0)
+	stdlog.SetOutput(&logWriter{level: level})
+	stdlog.SetFlags(0)
 }
 
 type logWriter struct {

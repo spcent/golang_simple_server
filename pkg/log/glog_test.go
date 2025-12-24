@@ -3,7 +3,7 @@ package glog
 import (
 	"bytes"
 	"io"
-	"log"
+	stdlog "log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -428,7 +428,7 @@ func TestCopyStandardLogTo(t *testing.T) {
 
 	// 使用标准log包记录日志
 
-	log.Print("standard log message")
+	stdlog.Print("standard log message")
 
 	output := buf.String()
 	if !strings.Contains(output, "standard log message") {
