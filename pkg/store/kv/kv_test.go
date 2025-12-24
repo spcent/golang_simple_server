@@ -37,7 +37,7 @@ func createTestStore(t *testing.T) (*KVStore, func()) {
 	opts := Options{
 		DataDir:       dataDir,
 		MaxEntries:    100000, // Increased from 1000 to 100000 to reduce evict frequency
-		MaxMemoryMB:   100,     // Increased from 10 to 100 to reduce evict frequency
+		MaxMemoryMB:   100,    // Increased from 10 to 100 to reduce evict frequency
 		FlushInterval: 10 * time.Millisecond,
 		CleanInterval: 100 * time.Millisecond,
 		ShardCount:    4,
@@ -391,6 +391,62 @@ func TestPersistence(t *testing.T) {
 	}
 }
 
+func TestSnapshotLoadUsesDistinctEntries(t *testing.T) {
+	dataDir := fmt.Sprintf("testdata_%d", time.Now().UnixNano())
+
+	opts := Options{
+		DataDir:       dataDir,
+		MaxEntries:    100,
+		MaxMemoryMB:   10,
+		FlushInterval: 10 * time.Millisecond,
+		CleanInterval: time.Second,
+		ShardCount:    2,
+	}
+
+	kv, err := NewKVStore(opts)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer func() {
+		kv.Close()
+		os.RemoveAll(dataDir)
+	}()
+
+	entries := map[string][]byte{
+		"alpha": []byte("one"),
+		"beta":  []byte("two"),
+	}
+
+	for k, v := range entries {
+		if err := kv.Set(k, v, 0); err != nil {
+			t.Fatalf("Set %s failed: %v", k, err)
+		}
+	}
+
+	if err := kv.Snapshot(); err != nil {
+		t.Fatalf("Snapshot failed: %v", err)
+	}
+
+	kv.Close()
+
+	kvReloaded, err := NewKVStore(opts)
+	if err != nil {
+		t.Fatalf("Failed to reload store: %v", err)
+	}
+	defer kvReloaded.Close()
+
+	for k, expected := range entries {
+		value, err := kvReloaded.Get(k)
+		if err != nil {
+			t.Fatalf("Get %s after reload failed: %v", k, err)
+		}
+
+		if !bytes.Equal(value, expected) {
+			t.Errorf("Value mismatch for %s: expected %s, got %s", k, expected, value)
+		}
+	}
+}
+
 func TestSnapshot(t *testing.T) {
 	kv, cleanup := createTestStore(t)
 	defer cleanup()
@@ -460,6 +516,44 @@ func TestCleanup(t *testing.T) {
 	// Keys should be cleaned up
 	if kv.Size() != 0 {
 		t.Errorf("Expected 0 keys after cleanup, got %d", kv.Size())
+	}
+}
+
+func TestGetExpiredIncrementsMisses(t *testing.T) {
+	dataDir := fmt.Sprintf("testdata_%d", time.Now().UnixNano())
+	defer os.RemoveAll(dataDir)
+
+	opts := Options{
+		DataDir:       dataDir,
+		MaxEntries:    10,
+		MaxMemoryMB:   1,
+		FlushInterval: 10 * time.Millisecond,
+		CleanInterval: time.Hour,
+		ShardCount:    2,
+	}
+
+	kv, err := NewKVStore(opts)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer kv.Close()
+
+	key := "ephemeral"
+	if err := kv.Set(key, []byte("value"), 20*time.Millisecond); err != nil {
+		t.Fatalf("Failed to set key with TTL: %v", err)
+	}
+
+	statsBefore := kv.GetStats()
+	time.Sleep(40 * time.Millisecond)
+
+	_, err = kv.Get(key)
+	if err != ErrKeyExpired {
+		t.Fatalf("Expected ErrKeyExpired, got %v", err)
+	}
+
+	statsAfter := kv.GetStats()
+	if statsAfter.Misses != statsBefore.Misses+1 {
+		t.Fatalf("Expected misses to increment after expired get: before=%d after=%d", statsBefore.Misses, statsAfter.Misses)
 	}
 }
 
