@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,20 +17,6 @@ import (
 	"github.com/spcent/golang_simple_server/pkg/router"
 )
 
-// Command line flags
-var (
-	// TLS flags
-	tlsEnabled  = flag.Bool("tls", false, "Enable TLS support")
-	tlsCertFile = flag.String("tls-cert", "./cert.pem", "Path to TLS certificate file")
-	tlsKeyFile  = flag.String("tls-key", "./key.pem", "Path to TLS private key file")
-
-	// Server address flag
-	addrFlag = flag.String("addr", ":8080", "Server address")
-
-	// Debug mode flag
-	debugFlag = flag.Bool("debug", false, "Enable debug mode")
-)
-
 // TLSConfig defines TLS configuration
 type TLSConfig struct {
 	Enabled  bool   // Whether to enable TLS
@@ -41,33 +26,27 @@ type TLSConfig struct {
 
 // AppConfig defines application configuration
 type AppConfig struct {
-	Addr    string    // Server address
-	EnvFile string    // Path to .env file
-	TLS     TLSConfig // TLS configuration
-	Debug   bool      // Debug mode
+	Addr            string        // Server address
+	EnvFile         string        // Path to .env file
+	TLS             TLSConfig     // TLS configuration
+	Debug           bool          // Debug mode
+	ShutdownTimeout time.Duration // Graceful shutdown timeout
 }
 
 // App represents the main application instance
 type App struct {
 	config      AppConfig               // Application configuration
-	mux         *http.ServeMux          // HTTP serve mux
 	router      *router.Router          // HTTP router
 	wsHub       *ws.Hub                 // WebSocket hub
 	started     bool                    // Whether the app has started
 	httpServer  *http.Server            // HTTP server instance
 	middlewares []middleware.Middleware // Stored middleware for all routes
+	handler     http.Handler            // Combined handler with middleware applied
 }
 
 // Option defines a function type for configuring the App
 // It follows the functional options pattern
 type Option func(*App)
-
-// WithMux sets the http.ServeMux for the App
-func WithMux(mux *http.ServeMux) Option {
-	return func(a *App) {
-		a.mux = mux
-	}
-}
 
 // WithRouter sets the router for the App
 func WithRouter(router *router.Router) Option {
@@ -90,6 +69,13 @@ func WithEnvPath(path string) Option {
 	}
 }
 
+// WithShutdownTimeout sets graceful shutdown timeout
+func WithShutdownTimeout(timeout time.Duration) Option {
+	return func(a *App) {
+		a.config.ShutdownTimeout = timeout
+	}
+}
+
 // WithTLS configures TLS for the app
 func WithTLS(certFile, keyFile string) Option {
 	return func(a *App) {
@@ -108,17 +94,24 @@ func WithTLSConfig(tlsConfig TLSConfig) Option {
 	}
 }
 
+// WithDebug enables debug mode for the app
+func WithDebug() Option {
+	return func(a *App) {
+		a.config.Debug = true
+	}
+}
+
 // New creates a new App instance with the provided options
 // Defaults are applied if no options are provided
 func New(options ...Option) *App {
 	app := &App{
 		config: AppConfig{
-			Addr:    ":8080",
-			EnvFile: ".env",
-			TLS:     TLSConfig{Enabled: false},
-			Debug:   false,
+			Addr:            ":8080",
+			EnvFile:         ".env",
+			TLS:             TLSConfig{Enabled: false},
+			Debug:           false,
+			ShutdownTimeout: 5 * time.Second,
 		},
-		mux:    http.NewServeMux(),
 		router: router.NewRouter(),
 	}
 
@@ -131,15 +124,13 @@ func New(options ...Option) *App {
 }
 
 // HandleFunc registers a handler function for the given path
-// It's a wrapper around http.ServeMux.HandleFunc
 func (a *App) HandleFunc(pattern string, handler http.HandlerFunc) {
-	a.mux.HandleFunc(pattern, handler)
+	a.router.HandleFunc(router.ANY, pattern, handler)
 }
 
 // Handle registers a handler for the given path
-// It's a wrapper around http.ServeMux.Handle
 func (a *App) Handle(pattern string, handler http.Handler) {
-	a.mux.Handle(pattern, handler)
+	a.router.Handle(router.ANY, pattern, handler)
 }
 
 // Get registers a GET route with the given handler
@@ -204,35 +195,18 @@ func (a *App) AnyHandler(path string, handler router.Handler) {
 
 // Use adds middleware to the application's middleware chain
 func (a *App) Use(middlewares ...middleware.Middleware) {
-	// Collect middleware
-	a.middlewares = append(a.middlewares, middlewares...)
-	
-	// Apply middleware immediately for testing purposes and to ensure latest middleware is used
-	chain := middleware.NewChain(a.middlewares...)
-	
-	combinedHandler := func(w http.ResponseWriter, r *http.Request) {
-		rr := &responseRecorder{ResponseWriter: w, statusCode: http.StatusNotFound}
-		a.router.ServeHTTP(rr, r)
-		
-		if rr.statusCode == http.StatusNotFound {
-			a.mux.ServeHTTP(w, r)
-		}
+	if a.started {
+		panic("cannot add middleware after app has started")
 	}
-	
-	wrappedHandler := chain.ApplyFunc(combinedHandler)
-	a.mux.HandleFunc("/", wrappedHandler)
+
+	// Collect middleware for later handler construction during setupServer
+	a.middlewares = append(a.middlewares, middlewares...)
 }
 
-// responseRecorder is a wrapper around http.ResponseWriter that records the status code
-// It's used to check if the router handled the request
-type responseRecorder struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (rr *responseRecorder) WriteHeader(code int) {
-	rr.statusCode = code
-	rr.ResponseWriter.WriteHeader(code)
+// buildHandler builds the combined handler with current middleware stack
+func (a *App) buildHandler() {
+	chain := middleware.NewChain(a.middlewares...)
+	a.handler = chain.Apply(a.router)
 }
 
 // Router returns the underlying router for advanced configuration
@@ -243,9 +217,6 @@ func (a *App) Router() *router.Router {
 // Boot initializes and starts the application
 // It sets up the router with the mux and starts the HTTP server
 func (a *App) Boot() error {
-	// Parse command line flags
-	flag.Parse()
-
 	// Initialize logger
 	glog.Init()
 	defer glog.Flush()
@@ -256,17 +227,7 @@ func (a *App) Boot() error {
 		return err
 	}
 
-	// Update configuration based on command line flags
-	if *addrFlag != ":8080" {
-		a.config.Addr = *addrFlag
-	}
-	if *tlsEnabled {
-		a.config.TLS.Enabled = true
-		a.config.TLS.CertFile = *tlsCertFile
-		a.config.TLS.KeyFile = *tlsKeyFile
-	}
-	if *debugFlag {
-		a.config.Debug = true
+	if a.config.Debug {
 		os.Setenv("APP_DEBUG", "true")
 	}
 
@@ -285,6 +246,10 @@ func (a *App) Boot() error {
 
 // loadEnv loads environment variables from .env file if it exists
 func (a *App) loadEnv() error {
+	if a.config.EnvFile == "" {
+		return nil
+	}
+
 	if _, err := os.Stat(a.config.EnvFile); err == nil {
 		glog.Infof("Load .env file: %s", a.config.EnvFile)
 		err := config.LoadEnv(a.config.EnvFile, true)
@@ -303,28 +268,12 @@ func (a *App) setupServer() error {
 		a.router.Print(os.Stdout)
 	}
 
-	// Apply all accumulated middleware at once
-	chain := middleware.NewChain(a.middlewares...)
-
-	combinedHandler := func(w http.ResponseWriter, r *http.Request) {
-		rr := &responseRecorder{ResponseWriter: w, statusCode: http.StatusNotFound}
-		a.router.ServeHTTP(rr, r)
-
-		if rr.statusCode == http.StatusNotFound {
-			a.mux.ServeHTTP(w, r)
-		}
-	}
-
-	wrappedHandler := chain.ApplyFunc(combinedHandler)
-
-	// Update the middleware handler regardless of whether it's been registered before
-	// This ensures the latest middleware chain is always applied
-	a.mux.HandleFunc("/", wrappedHandler)
+	a.buildHandler()
 
 	// Create HTTP server instance
 	a.httpServer = &http.Server{
 		Addr:    a.config.Addr,
-		Handler: a.mux,
+		Handler: a.handler,
 	}
 
 	return nil
@@ -343,7 +292,11 @@ func (a *App) startServer() error {
 
 		glog.Info("SIGTERM received, shutting down...")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		timeout := a.config.ShutdownTimeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
 		if err := a.httpServer.Shutdown(ctx); err != nil {
@@ -425,13 +378,13 @@ func (a *App) ConfigureWebSocketWithOptions(config WebSocketConfig) *ws.Hub {
 	wsAuth := ws.NewSimpleRoomAuth(config.Secret)
 
 	// Register WebSocket handler
-	a.HandleFunc(config.WSRoutePath, func(w http.ResponseWriter, r *http.Request) {
+	a.Router().GetFunc(config.WSRoutePath, func(w http.ResponseWriter, r *http.Request) {
 		ws.ServeWSWithAuth(w, r, hub, wsAuth, config.SendQueueSize,
 			config.SendTimeout, config.SendBehavior)
 	})
 
 	// Register broadcast endpoint
-	a.HandleFunc(config.BroadcastPath, func(w http.ResponseWriter, r *http.Request) {
+	a.Router().PostFunc(config.BroadcastPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return

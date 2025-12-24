@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,13 +52,14 @@ type segment struct {
 
 // node represents a node in the prefix trie
 type node struct {
-	path      string   // path segment
-	fullPath  string   // full path for this node (only set for nodes with handlers)
-	indices   string   // string of child path starts (optimized for lookup)
-	children  []*node  // child nodes
-	handler   Handler  // handler for this node
-	paramKeys []string // parameter keys for this node
-	priority  int      // priority for this node (higher = more specific)
+	path        string                  // path segment
+	fullPath    string                  // full path for this node (only set for nodes with handlers)
+	indices     string                  // string of child path starts (optimized for lookup)
+	children    []*node                 // child nodes
+	handler     Handler                 // handler for this node
+	paramKeys   []string                // parameter keys for this node
+	priority    int                     // priority for this node (higher = more specific)
+	middlewares []middleware.Middleware // middlewares specific to the route
 }
 
 type route struct {
@@ -74,6 +76,20 @@ type Router struct {
 	mu          sync.RWMutex            // Mutex for concurrent access
 	parent      *Router                 // Parent router for groups
 	middlewares []middleware.Middleware // Group-level middlewares
+}
+
+type paramsContextKey struct{}
+
+// ParamsFromContext returns route parameters stored in the request context.
+// It returns nil if no parameters were attached.
+func ParamsFromContext(ctx context.Context) map[string]string {
+	if ctx == nil {
+		return nil
+	}
+	if params, ok := ctx.Value(paramsContextKey{}).(map[string]string); ok {
+		return params
+	}
+	return nil
 }
 
 func NewRouter() *Router {
@@ -212,8 +228,24 @@ func (r *Router) AddRoute(method, path string, handler Handler) {
 	current.handler = handler
 	current.paramKeys = paramKeys
 	current.fullPath = fullPath
+	current.middlewares = r.routeMiddlewares()
 
 	r.routes[method] = append(r.routes[method], route{Method: method, Path: fullPath})
+}
+
+func (r *Router) routeMiddlewares() []middleware.Middleware {
+	if r.parent == nil || len(r.middlewares) == 0 {
+		return nil
+	}
+
+	parentLen := len(r.parent.middlewares)
+	if parentLen >= len(r.middlewares) {
+		return nil
+	}
+
+	extra := make([]middleware.Middleware, len(r.middlewares)-parentLen)
+	copy(extra, r.middlewares[parentLen:])
+	return extra
 }
 
 // Use adds middlewares to the router group
@@ -304,7 +336,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if path == "/" || path == "" {
 		if tree.handler != nil {
 			// Apply middleware and serve request for root path
-			r.applyMiddlewareAndServe(w, req, nil, tree.handler)
+			r.applyMiddlewareAndServe(w, req, nil, tree.handler, tree.middlewares)
 			return
 		}
 		http.NotFound(w, req)
@@ -315,7 +347,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	params := make(map[string]string)
 
 	// Perform trie-based route matching and get handler, param values, and param keys
-	handler, paramValues, paramKeys := r.matchRoute(tree, parts)
+	handler, paramValues, paramKeys, routeMiddlewares := r.matchRoute(tree, parts)
+	if handler == nil && method != ANY {
+		if anyTree := r.trees[ANY]; anyTree != nil {
+			handler, paramValues, paramKeys, routeMiddlewares = r.matchRoute(anyTree, parts)
+		}
+	}
 	if handler == nil {
 		http.NotFound(w, req)
 		return
@@ -331,34 +368,36 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Apply middleware and serve request
-	r.applyMiddlewareAndServe(w, req, params, handler)
+	r.applyMiddlewareAndServe(w, req, params, handler, routeMiddlewares)
 }
 
 // applyMiddlewareAndServe applies middleware chain to the handler and serves the request
-func (r *Router) applyMiddlewareAndServe(w http.ResponseWriter, req *http.Request, params map[string]string, handler Handler) {
-	// If no middlewares, just call the handler directly
-	if len(r.middlewares) == 0 {
-		handler(w, req, params)
+func (r *Router) applyMiddlewareAndServe(w http.ResponseWriter, req *http.Request, params map[string]string, handler Handler, routeMiddlewares []middleware.Middleware) {
+	reqWithParams := req
+	if len(params) > 0 {
+		ctx := context.WithValue(req.Context(), paramsContextKey{}, params)
+		reqWithParams = req.WithContext(ctx)
+	}
+
+	combined := append([]middleware.Middleware{}, r.middlewares...)
+	combined = append(combined, routeMiddlewares...)
+
+	if len(combined) == 0 {
+		handler(w, reqWithParams, params)
 		return
 	}
 
-	// Create a middleware chain
-	chain := middleware.NewChain(r.middlewares...)
-
-	// Create a http.Handler adapter that preserves route params
+	chain := middleware.NewChain(combined...)
 	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler(w, r, params)
 	})
 
-	// Apply middleware chain
 	wrappedHandler := chain.Apply(httpHandler)
-
-	// Call the wrapped handler
-	wrappedHandler.ServeHTTP(w, req)
+	wrappedHandler.ServeHTTP(w, reqWithParams)
 }
 
 // matchRoute performs efficient trie-based route matching
-func (r *Router) matchRoute(root *node, parts []string) (Handler, []string, []string) {
+func (r *Router) matchRoute(root *node, parts []string) (Handler, []string, []string, []middleware.Middleware) {
 	current := root
 	paramValues := make([]string, 0, len(parts))
 
@@ -388,11 +427,11 @@ func (r *Router) matchRoute(root *node, parts []string) (Handler, []string, []st
 		}
 
 		// No match found
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	// Use the paramKeys stored in the node during route registration
-	return current.handler, paramValues, current.paramKeys
+	return current.handler, paramValues, current.paramKeys, current.middlewares
 }
 
 // findChildForPath finds a child node that matches the given path segment
