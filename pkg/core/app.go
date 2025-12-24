@@ -3,12 +3,15 @@ package core
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -34,18 +37,32 @@ type AppConfig struct {
 	TLS             TLSConfig     // TLS configuration
 	Debug           bool          // Debug mode
 	ShutdownTimeout time.Duration // Graceful shutdown timeout
+	// HTTP server hardening
+	ReadTimeout       time.Duration // Maximum duration for reading the entire request, including the body
+	ReadHeaderTimeout time.Duration // Maximum duration for reading the request headers (slowloris protection)
+	WriteTimeout      time.Duration // Maximum duration before timing out writes of the response
+	IdleTimeout       time.Duration // Maximum time to wait for the next request when keep-alives are enabled
+	MaxHeaderBytes    int           // Maximum size of request headers
+	EnableHTTP2       bool          // Whether to keep HTTP/2 support enabled
+	DrainInterval     time.Duration // How often to log in-flight connection counts while draining
+	MaxBodyBytes      int64         // Per-request body limit
+	MaxConcurrency    int           // Maximum number of concurrent requests being served
+	QueueDepth        int           // Maximum number of requests allowed to queue while waiting for a worker
+	QueueTimeout      time.Duration // Maximum time a request can wait in the queue
 }
 
 // App represents the main application instance
 type App struct {
-	config      AppConfig               // Application configuration
-	router      *router.Router          // HTTP router
-	wsHub       *ws.Hub                 // WebSocket hub
-	started     bool                    // Whether the app has started
-	envLoaded   bool                    // Whether environment variables have been loaded
-	httpServer  *http.Server            // HTTP server instance
-	middlewares []middleware.Middleware // Stored middleware for all routes
-	handler     http.Handler            // Combined handler with middleware applied
+	config        AppConfig               // Application configuration
+	router        *router.Router          // HTTP router
+	wsHub         *ws.Hub                 // WebSocket hub
+	started       bool                    // Whether the app has started
+	envLoaded     bool                    // Whether environment variables have been loaded
+	httpServer    *http.Server            // HTTP server instance
+	middlewares   []middleware.Middleware // Stored middleware for all routes
+	handler       http.Handler            // Combined handler with middleware applied
+	connTracker   *connectionTracker
+	guardsApplied bool
 
 	logger           log.StructuredLogger
 	metricsCollector middleware.MetricsCollector
@@ -81,6 +98,46 @@ func WithEnvPath(path string) Option {
 func WithShutdownTimeout(timeout time.Duration) Option {
 	return func(a *App) {
 		a.config.ShutdownTimeout = timeout
+	}
+}
+
+// WithServerTimeouts configures HTTP server timeouts for read, write and idle connections.
+func WithServerTimeouts(read, readHeader, write, idle time.Duration) Option {
+	return func(a *App) {
+		a.config.ReadTimeout = read
+		a.config.ReadHeaderTimeout = readHeader
+		a.config.WriteTimeout = write
+		a.config.IdleTimeout = idle
+	}
+}
+
+// WithMaxHeaderBytes sets the maximum header size accepted by the server.
+func WithMaxHeaderBytes(bytes int) Option {
+	return func(a *App) {
+		a.config.MaxHeaderBytes = bytes
+	}
+}
+
+// WithMaxBodyBytes sets the default request body limit.
+func WithMaxBodyBytes(bytes int64) Option {
+	return func(a *App) {
+		a.config.MaxBodyBytes = bytes
+	}
+}
+
+// WithConcurrencyLimits sets the maximum concurrent requests and queueing strategy.
+func WithConcurrencyLimits(maxConcurrent, queueDepth int, queueTimeout time.Duration) Option {
+	return func(a *App) {
+		a.config.MaxConcurrency = maxConcurrent
+		a.config.QueueDepth = queueDepth
+		a.config.QueueTimeout = queueTimeout
+	}
+}
+
+// WithHTTP2 enables or disables HTTP/2 support when TLS is configured.
+func WithHTTP2(enabled bool) Option {
+	return func(a *App) {
+		a.config.EnableHTTP2 = enabled
 	}
 }
 
@@ -137,11 +194,22 @@ func WithTracer(tracer middleware.Tracer) Option {
 func New(options ...Option) *App {
 	app := &App{
 		config: AppConfig{
-			Addr:            ":8080",
-			EnvFile:         ".env",
-			TLS:             TLSConfig{Enabled: false},
-			Debug:           false,
-			ShutdownTimeout: 5 * time.Second,
+			Addr:              ":8080",
+			EnvFile:           ".env",
+			TLS:               TLSConfig{Enabled: false},
+			Debug:             false,
+			ShutdownTimeout:   5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			ReadHeaderTimeout: 5 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			MaxHeaderBytes:    1 << 20, // 1 MiB
+			EnableHTTP2:       true,
+			DrainInterval:     500 * time.Millisecond,
+			MaxBodyBytes:      10 << 20, // 10 MiB
+			MaxConcurrency:    256,
+			QueueDepth:        512,
+			QueueTimeout:      250 * time.Millisecond,
 		},
 		router: router.NewRouter(),
 		logger: log.NewGLogger(),
@@ -235,6 +303,29 @@ func (a *App) Use(middlewares ...middleware.Middleware) {
 	a.middlewares = append(a.middlewares, middlewares...)
 }
 
+func (a *App) applyGuardrails() {
+	if a.guardsApplied {
+		return
+	}
+
+	var guards []middleware.Middleware
+
+	if a.config.MaxBodyBytes > 0 {
+		guards = append(guards, middleware.BodyLimit(a.config.MaxBodyBytes, a.logger))
+	}
+
+	if a.config.MaxConcurrency > 0 {
+		guards = append(guards, middleware.ConcurrencyLimit(a.config.MaxConcurrency, a.config.QueueDepth, a.config.QueueTimeout, a.logger))
+	}
+
+	if len(guards) > 0 {
+		// Hardening middleware should execute before user-specified middleware.
+		a.middlewares = append(guards, a.middlewares...)
+	}
+
+	a.guardsApplied = true
+}
+
 // buildHandler builds the combined handler with current middleware stack
 func (a *App) buildHandler() {
 	chain := middleware.NewChain(a.middlewares...)
@@ -309,12 +400,25 @@ func (a *App) setupServer() error {
 		a.router.Print(os.Stdout)
 	}
 
+	a.applyGuardrails()
 	a.buildHandler()
 
 	// Create HTTP server instance
 	a.httpServer = &http.Server{
-		Addr:    a.config.Addr,
-		Handler: a.handler,
+		Addr:              a.config.Addr,
+		Handler:           a.handler,
+		ReadTimeout:       a.config.ReadTimeout,
+		ReadHeaderTimeout: a.config.ReadHeaderTimeout,
+		WriteTimeout:      a.config.WriteTimeout,
+		IdleTimeout:       a.config.IdleTimeout,
+		MaxHeaderBytes:    a.config.MaxHeaderBytes,
+	}
+
+	a.connTracker = newConnectionTracker(a.logger, a.config.DrainInterval)
+	a.httpServer.ConnState = a.connTracker.track
+
+	if !a.config.EnableHTTP2 {
+		a.httpServer.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
 	}
 
 	return nil
@@ -334,6 +438,7 @@ func (a *App) startServer() error {
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 		<-sig
 
+		health.SetNotReady("draining connections")
 		a.logger.Info("SIGTERM received, shutting down", nil)
 
 		timeout := a.config.ShutdownTimeout
@@ -342,6 +447,10 @@ func (a *App) startServer() error {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
+
+		if a.connTracker != nil {
+			go a.connTracker.drain(ctx)
+		}
 
 		if err := a.httpServer.Shutdown(ctx); err != nil {
 			a.logger.Error("Server shutdown error", log.Fields{"error": err})
@@ -377,6 +486,47 @@ func (a *App) startServer() error {
 
 	a.logger.Info("Server stopped gracefully", nil)
 	return err
+}
+
+type connectionTracker struct {
+	active   atomic.Int64
+	logger   log.StructuredLogger
+	interval time.Duration
+}
+
+func newConnectionTracker(logger log.StructuredLogger, interval time.Duration) *connectionTracker {
+	if interval <= 0 {
+		interval = 500 * time.Millisecond
+	}
+	return &connectionTracker{logger: logger, interval: interval}
+}
+
+func (t *connectionTracker) track(_ net.Conn, state http.ConnState) {
+	switch state {
+	case http.StateNew:
+		t.active.Add(1)
+	case http.StateHijacked, http.StateClosed:
+		t.active.Add(-1)
+	}
+}
+
+func (t *connectionTracker) drain(ctx context.Context) {
+	ticker := time.NewTicker(t.interval)
+	defer ticker.Stop()
+
+	for {
+		if t.active.Load() <= 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if t.logger != nil {
+				t.logger.Info("draining active connections", log.Fields{"active_connections": t.active.Load()})
+			}
+		}
+	}
 }
 
 // WebSocketConfig defines the configuration for WebSocket

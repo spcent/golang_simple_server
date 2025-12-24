@@ -27,7 +27,7 @@ func TestTimeoutMiddleware_TimesOut(t *testing.T) {
 
 	wrapped(rr, req)
 
-	var resp Response
+	var resp ErrorResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestTimeoutMiddleware_TimesOut(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusGatewayTimeout, rr.Code)
 	}
 
-	if resp.Code != http.StatusGatewayTimeout || resp.Msg != "request timeout" {
+	if resp.Error.Code != "request_timeout" || resp.Error.Category != CategoryServer {
 		t.Fatalf("unexpected response payload: %+v", resp)
 	}
 
