@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"net/http"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"github.com/spcent/golang_simple_server/pkg/core"
 	"github.com/spcent/golang_simple_server/pkg/frontend"
 	log "github.com/spcent/golang_simple_server/pkg/log"
+	"github.com/spcent/golang_simple_server/pkg/net/webhookout"
+	"github.com/spcent/golang_simple_server/pkg/pubsub"
 )
 
 func main() {
@@ -24,11 +27,25 @@ func main() {
 	gracefulTimeout := flag.Duration("graceful-timeout", 5*time.Second, "Graceful shutdown timeout")
 	flag.Parse()
 
+	// Shared in-proc pubsub for webhook receivers and debug endpoint.
+	pub := pubsub.New()
+
+	webhookCfg := webhookout.ConfigFromEnv()
+	webhookSvc := webhookout.NewService(webhookout.NewMemStore(), webhookCfg)
+	if webhookCfg.Enabled {
+		webhookSvc.Start(context.Background())
+		defer webhookSvc.Stop()
+	}
+
 	// Create a new app with configuration from flags
 	opts := []core.Option{
 		core.WithAddr(*addr),
 		core.WithEnvPath(*envFile),
 		core.WithShutdownTimeout(*gracefulTimeout),
+		core.WithPubSub(pub),
+		core.WithPubSubDebug(core.PubSubDebugConfig{Enabled: true}),
+		core.WithWebhookOut(core.WebhookOutConfig{Enabled: webhookCfg.Enabled, Service: webhookSvc, IncludeStats: true}),
+		core.WithWebhookIn(core.WebhookInConfig{Enabled: true}),
 	}
 
 	if *tlsEnabled {
@@ -80,6 +97,9 @@ func main() {
 
 	// Register routes via handlers package
 	handlers.RegisterRoutes(app.Router())
+	app.ConfigurePubSubDebug()
+	app.ConfigureWebhookOut()
+	app.ConfigureWebhookIn()
 
 	// Apply middleware using more elegant methods
 	app.EnableLogging()
