@@ -1,7 +1,14 @@
 package password
 
 import (
-	"golang.org/x/crypto/bcrypt"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
 	"unicode"
 )
 
@@ -63,19 +70,75 @@ func ValidatePasswordStrength(password string, config PasswordStrengthConfig) bo
 	return true
 }
 
-// HashPassword generates a bcrypt hash of the password with the default cost.
+// DefaultCost represents the default number of hash rounds applied during password hashing.
+const DefaultCost = 12
+
+// HashPassword generates a salted hash of the password with the default cost.
 func HashPassword(password string) (string, error) {
-	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	return string(bytes), err
+	return HashPasswordWithCost(password, DefaultCost)
 }
 
-// HashPasswordWithCost generates a bcrypt hash of the password with the specified cost.
+// HashPasswordWithCost generates a salted hash of the password with the specified cost.
+// The returned string has the format: "<cost>$<salt>$<hash>".
 func HashPasswordWithCost(password string, cost int) (string, error) {
-	bytes, err := bcrypt.GenerateFromPassword([]byte(password), cost)
-	return string(bytes), err
+	if cost < 1 {
+		return "", errors.New("cost must be at least 1")
+	}
+
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return "", fmt.Errorf("generate salt: %w", err)
+	}
+
+	derived := deriveKey(password, salt, cost)
+	encodedSalt := base64.StdEncoding.EncodeToString(salt)
+	encodedHash := base64.StdEncoding.EncodeToString(derived)
+
+	return fmt.Sprintf("%d$%s$%s", cost, encodedSalt, encodedHash), nil
 }
 
-// CheckPassword compares a bcrypt hashed password with its plaintext version.
+// CheckPassword compares a hashed password with its plaintext version.
 func CheckPassword(hashedPassword, password string) error {
-	return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+	parts := strings.Split(hashedPassword, "$")
+	if len(parts) != 3 {
+		return errors.New("invalid hash format")
+	}
+
+	cost, err := strconv.Atoi(parts[0])
+	if err != nil || cost < 1 {
+		return errors.New("invalid hash format")
+	}
+
+	salt, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		return fmt.Errorf("decode salt: %w", err)
+	}
+
+	expectedHash, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil {
+		return fmt.Errorf("decode hash: %w", err)
+	}
+
+	derived := deriveKey(password, salt, cost)
+	if subtle.ConstantTimeCompare(expectedHash, derived) == 1 {
+		return nil
+	}
+
+	return errors.New("password mismatch")
+}
+
+func deriveKey(password string, salt []byte, cost int) []byte {
+	combined := append([]byte{}, salt...)
+	combined = append(combined, []byte(password)...)
+
+	sum := sha256.Sum256(combined)
+	derived := sum[:]
+
+	// Repeat hashing cost-1 additional times to increase work factor.
+	for i := 1; i < cost; i++ {
+		sum = sha256.Sum256(derived)
+		derived = sum[:]
+	}
+
+	return derived
 }

@@ -28,7 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
+	"github.com/spcent/golang_simple_server/pkg/security/password"
 )
 
 const (
@@ -641,7 +641,7 @@ func (h *Hub) BroadcastAll(op byte, data []byte) {
 
 // simpleRoomAuth stores metadata about rooms (password)
 type simpleRoomAuth struct {
-	roomPasswords map[string]string // room -> password (bcrypt hashed)
+	roomPasswords map[string]string // room -> password (hashed)
 	mu            sync.RWMutex
 	jwtSecret     []byte // HMAC secret for HS256
 }
@@ -656,7 +656,7 @@ func (s *simpleRoomAuth) SetRoomPassword(room, pwd string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Hash password before storing
-	hashed, err := bcrypt.GenerateFromPassword([]byte(pwd), bcrypt.DefaultCost)
+	hashed, err := password.HashPassword(pwd)
 	if err != nil {
 		log.Printf("Error hashing room password: %v", err)
 		return
@@ -667,8 +667,8 @@ func (s *simpleRoomAuth) CheckRoomPassword(room, provided string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if hashed, ok := s.roomPasswords[room]; ok {
-		// Verify bcrypt hash
-		err := bcrypt.CompareHashAndPassword([]byte(hashed), []byte(provided))
+		// Verify hash
+		err := password.CheckPassword(hashed, provided)
 		return err == nil
 	}
 	// no password set => allowed
