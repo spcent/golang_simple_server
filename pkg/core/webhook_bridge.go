@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/spcent/golang_simple_server/pkg/net/webhookout"
 	"github.com/spcent/golang_simple_server/pkg/pubsub"
-	"github.com/spcent/golang_simple_server/pkg/webhook"
 )
 
 type Rule struct {
@@ -25,7 +25,7 @@ type Rule struct {
 
 type WebhookBridge struct {
 	Pub pubsub.PubSub
-	Out *webhook.Service
+	Out *webhookout.Service
 
 	// Rules define what inbound topics are bridged to which outbound event types.
 	Rules []Rule
@@ -147,7 +147,7 @@ func (b *WebhookBridge) handleMsg(ctx context.Context, msg pubsub.Message, rule 
 	}
 
 	// Map to webhook.Event
-	ev := webhook.Event{
+	ev := webhookout.Event{
 		Type: rule.OutEventType,
 		// OccurredAt will be set inside TriggerEvent; keep inbound time in meta for traceability.
 		Data: map[string]any{

@@ -22,6 +22,5 @@ func RegisterRoutes(r *router.Router) {
 		w.Write([]byte(fmt.Sprintf(`{"user": "%s", "post": "%s"}`, id, postID)))
 	})
 
-	r.Register(&HealthHandler{}, &UserHandler{}, &WebhookInHandler{})
-	// r.Register(&WebhookHandler{Svc: webhook.NewWebhookService()})
+	r.Register(&HealthHandler{}, &UserHandler{})
 }

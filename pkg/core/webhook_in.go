@@ -1,4 +1,4 @@
-package handlers
+package core
 
 import (
 	"encoding/json"
@@ -8,40 +8,43 @@ import (
 	"time"
 
 	"github.com/spcent/golang_simple_server/pkg/contract"
-	"github.com/spcent/golang_simple_server/pkg/net/webhookin"
+	webhookin "github.com/spcent/golang_simple_server/pkg/net/webhookin"
 	"github.com/spcent/golang_simple_server/pkg/pubsub"
-	"github.com/spcent/golang_simple_server/pkg/router"
 	"github.com/spcent/golang_simple_server/pkg/utils/jsonx"
 )
 
-type WebhookInHandler struct {
-	Pub pubsub.PubSub
-
-	// secrets can be injected (tests) or read from env
-	GitHubSecret string
-	StripeSecret string
-
-	// verify constraints
-	MaxBodyBytes    int64
-	StripeTolerance time.Duration
-
-	// inbound idempotency
-	Deduper  *webhookin.Deduper
-	DedupTTL time.Duration
-}
-
-func (h *WebhookInHandler) Register(r *router.Router) {
-	r.PostCtx("/webhooks/in/github", h.GitHub)
-	r.PostCtx("/webhooks/in/stripe", h.Stripe)
-}
-
-func (h *WebhookInHandler) GitHub(ctx *contract.Ctx) {
-	if h.Pub == nil {
-		ctx.ErrorJSON(http.StatusInternalServerError, "missing_pubsub", "pubsub is not configured", nil)
+// ConfigureWebhookIn mounts inbound webhook receivers for GitHub and Stripe.
+func (a *App) ConfigureWebhookIn() {
+	cfg := a.config.WebhookIn
+	if !cfg.Enabled {
 		return
 	}
 
-	secret := strings.TrimSpace(h.GitHubSecret)
+	pub := cfg.Pub
+	if pub == nil {
+		pub = a.pub
+	}
+	if pub == nil {
+		return
+	}
+
+	router := a.Router()
+
+	gitHubPath := strings.TrimSpace(cfg.GitHubPath)
+	if gitHubPath == "" {
+		gitHubPath = "/webhooks/github"
+	}
+	router.PostCtx(gitHubPath, func(ctx *contract.Ctx) { a.webhookInGitHub(ctx, pub, cfg) })
+
+	stripePath := strings.TrimSpace(cfg.StripePath)
+	if stripePath == "" {
+		stripePath = "/webhooks/stripe"
+	}
+	router.PostCtx(stripePath, func(ctx *contract.Ctx) { a.webhookInStripe(ctx, pub, cfg) })
+}
+
+func (a *App) webhookInGitHub(ctx *contract.Ctx, pub pubsub.PubSub, cfg WebhookInConfig) {
+	secret := strings.TrimSpace(cfg.GitHubSecret)
 	if secret == "" {
 		secret = strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_SECRET"))
 	}
@@ -50,7 +53,10 @@ func (h *WebhookInHandler) GitHub(ctx *contract.Ctx) {
 		return
 	}
 
-	maxBody := h.maxBody()
+	maxBody := cfg.MaxBodyBytes
+	if maxBody <= 0 {
+		maxBody = 1 << 20
+	}
 	raw, err := webhookin.VerifyGitHub(ctx.R, secret, maxBody)
 	if err != nil {
 		ctx.ErrorJSON(http.StatusUnauthorized, "invalid_signature", "invalid GitHub signature", nil)
@@ -63,14 +69,11 @@ func (h *WebhookInHandler) GitHub(ctx *contract.Ctx) {
 		event = "unknown"
 	}
 	if delivery == "" {
-		// still allow but cannot dedup reliably
 		delivery = "unknown"
 	}
 
-	// Dedup: prefer GitHub delivery id
-	d := h.ensureDeduper()
+	d := a.ensureWebhookInDeduper(cfg)
 	if delivery != "unknown" && d.SeenBefore("github:"+delivery) {
-		// at-least-once semantics: GitHub may resend; we return 200 to stop further retries
 		ctx.JSON(http.StatusOK, map[string]any{
 			"ok":          true,
 			"provider":    "github",
@@ -82,14 +85,18 @@ func (h *WebhookInHandler) GitHub(ctx *contract.Ctx) {
 		return
 	}
 
-	topic := "in.github." + sanitizeTopicSuffix(event)
+	topicPrefix := strings.TrimSpace(cfg.TopicPrefixGitHub)
+	if topicPrefix == "" {
+		topicPrefix = "in.github."
+	}
+	topic := topicPrefix + sanitizeTopicSuffix(event)
 
 	msg := pubsub.Message{
-		ID:    delivery, // good enough for in-proc
+		ID:    delivery,
 		Topic: topic,
 		Type:  event,
 		Time:  time.Now().UTC(),
-		Data:  json.RawMessage(raw), // immutable bytes; consumers can unmarshal if needed
+		Data:  json.RawMessage(raw),
 		Meta: map[string]string{
 			"source":      "github",
 			"trace_id":    ctx.TraceID,
@@ -99,9 +106,8 @@ func (h *WebhookInHandler) GitHub(ctx *contract.Ctx) {
 		},
 	}
 
-	_ = h.Pub.Publish(topic, msg)
+	_ = pub.Publish(topic, msg)
 
-	// Minimal response for webhook sender
 	ctx.JSON(http.StatusOK, map[string]any{
 		"ok":          true,
 		"provider":    "github",
@@ -114,13 +120,8 @@ func (h *WebhookInHandler) GitHub(ctx *contract.Ctx) {
 	})
 }
 
-func (h *WebhookInHandler) Stripe(ctx *contract.Ctx) {
-	if h.Pub == nil {
-		ctx.ErrorJSON(http.StatusInternalServerError, "missing_pubsub", "pubsub is not configured", nil)
-		return
-	}
-
-	secret := strings.TrimSpace(h.StripeSecret)
+func (a *App) webhookInStripe(ctx *contract.Ctx, pub pubsub.PubSub, cfg WebhookInConfig) {
+	secret := strings.TrimSpace(cfg.StripeSecret)
 	if secret == "" {
 		secret = strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))
 	}
@@ -129,22 +130,21 @@ func (h *WebhookInHandler) Stripe(ctx *contract.Ctx) {
 		return
 	}
 
-	maxBody := h.maxBody()
-	tol := h.StripeTolerance
+	maxBody := cfg.MaxBodyBytes
+	if maxBody <= 0 {
+		maxBody = 1 << 20
+	}
+	tol := cfg.StripeTolerance
 	if tol <= 0 {
 		tol = 5 * time.Minute
 	}
 
-	raw, err := webhookin.VerifyStripe(ctx.R, secret, webhookin.StripeVerifyOptions{
-		MaxBody:   maxBody,
-		Tolerance: tol,
-	})
+	raw, err := webhookin.VerifyStripe(ctx.R, secret, webhookin.StripeVerifyOptions{MaxBody: maxBody, Tolerance: tol})
 	if err != nil {
 		ctx.ErrorJSON(http.StatusUnauthorized, "invalid_signature", "invalid Stripe signature", nil)
 		return
 	}
 
-	// Stripe event id and type (best effort)
 	evtID := jsonx.FieldString(raw, "id")
 	evtType := jsonx.FieldString(raw, "type")
 	if evtType == "" {
@@ -154,8 +154,7 @@ func (h *WebhookInHandler) Stripe(ctx *contract.Ctx) {
 		evtID = "unknown"
 	}
 
-	// Dedup: prefer Stripe event id
-	d := h.ensureDeduper()
+	d := a.ensureWebhookInDeduper(cfg)
 	if evtID != "unknown" && d.SeenBefore("stripe:"+evtID) {
 		ctx.JSON(http.StatusOK, map[string]any{
 			"ok":         true,
@@ -168,7 +167,11 @@ func (h *WebhookInHandler) Stripe(ctx *contract.Ctx) {
 		return
 	}
 
-	topic := "in.stripe." + sanitizeTopicSuffix(evtType)
+	topicPrefix := strings.TrimSpace(cfg.TopicPrefixStripe)
+	if topicPrefix == "" {
+		topicPrefix = "in.stripe."
+	}
+	topic := topicPrefix + sanitizeTopicSuffix(evtType)
 
 	msg := pubsub.Message{
 		ID:    evtID,
@@ -185,7 +188,7 @@ func (h *WebhookInHandler) Stripe(ctx *contract.Ctx) {
 		},
 	}
 
-	_ = h.Pub.Publish(topic, msg)
+	_ = pub.Publish(topic, msg)
 
 	ctx.JSON(http.StatusOK, map[string]any{
 		"ok":         true,
@@ -199,23 +202,19 @@ func (h *WebhookInHandler) Stripe(ctx *contract.Ctx) {
 	})
 }
 
-func (h *WebhookInHandler) maxBody() int64 {
-	if h.MaxBodyBytes > 0 {
-		return h.MaxBodyBytes
+func (a *App) ensureWebhookInDeduper(cfg WebhookInConfig) *webhookin.Deduper {
+	if cfg.Deduper != nil {
+		return cfg.Deduper
 	}
-	return 1 << 20 // 1MB
-}
-
-func (h *WebhookInHandler) ensureDeduper() *webhookin.Deduper {
-	if h.Deduper != nil {
-		return h.Deduper
+	if a.webhookInDeduper != nil {
+		return a.webhookInDeduper
 	}
-	ttl := h.DedupTTL
+	ttl := cfg.DedupTTL
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
 	}
-	h.Deduper = webhookin.NewDeduper(ttl)
-	return h.Deduper
+	a.webhookInDeduper = webhookin.NewDeduper(ttl)
+	return a.webhookInDeduper
 }
 
 // sanitizeTopicSuffix keeps topic safe and consistent.
