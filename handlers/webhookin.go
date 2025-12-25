@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
@@ -142,53 +141,4 @@ func (h *WebhookInHandler) maxBody() int64 {
 		return h.MaxBodyBytes
 	}
 	return 1 << 20 // 1MB
-}
-
-/*
-|--------------------------------------------------------------------------
-| Small JSON helpers (best-effort, no schema dependency)
-|--------------------------------------------------------------------------
-*/
-
-func extractJSONFieldString(raw []byte, key string) string {
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return ""
-	}
-	v, ok := m[key]
-	if !ok {
-		return ""
-	}
-	s, _ := v.(string)
-	return s
-}
-
-func extractJSONFieldBool(raw []byte, key string) bool {
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return false
-	}
-	v, ok := m[key]
-	if !ok {
-		return false
-	}
-	b, _ := v.(bool)
-	return b
-}
-
-func extractJSONPathString(raw []byte, objKey string, fieldKey string) string {
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return ""
-	}
-	obj, ok := m[objKey].(map[string]any)
-	if !ok || obj == nil {
-		return ""
-	}
-	v, ok := obj[fieldKey]
-	if !ok {
-		return ""
-	}
-	s, _ := v.(string)
-	return s
 }

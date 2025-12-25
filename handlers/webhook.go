@@ -186,18 +186,6 @@ func targetToDTO(t webhook.Target) TargetDTO {
 	}
 }
 
-func maskSecret(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	n := len(s)
-	if n <= 4 {
-		return strings.Repeat("*", n)
-	}
-	return s[:2] + strings.Repeat("*", n-4) + s[n-2:]
-}
-
 /*
 |--------------------------------------------------------------------------
 | Events (trigger auth)
