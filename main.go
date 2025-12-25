@@ -40,6 +40,7 @@ func main() {
 	}
 
 	app := core.New(opts...)
+	l := app.Logger()
 
 	// Register routes directly on the app using the new API
 	app.Get("/ping", func(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +55,7 @@ func main() {
 
 	// Configure WebSocket with custom secret for JWT authentication
 	if _, err := app.ConfigureWebSocket(); err != nil {
-		app.Logger().Error("Failed to configure WebSocket", log.Fields{"error": err})
+		l.Error("Failed to configure WebSocket", log.Fields{"error": err})
 	}
 
 	// Mount a built Node/Next.js frontend when provided via flag or env.
@@ -65,15 +66,15 @@ func main() {
 
 	if frontendDirValue != "" {
 		if err := frontend.RegisterFromDir(app.Router(), frontendDirValue, frontend.WithCacheControl("public, max-age=31536000")); err != nil {
-			app.Logger().Error("Failed to mount frontend", log.Fields{"error": err, "dir": frontendDirValue})
+			l.Error("Failed to mount frontend", log.Fields{"error": err, "dir": frontendDirValue})
 		} else {
-			app.Logger().Info("Frontend mounted", log.Fields{"dir": frontendDirValue})
+			l.Info("Frontend mounted", log.Fields{"dir": frontendDirValue})
 		}
 	} else if frontend.HasEmbedded() {
 		if err := frontend.RegisterEmbedded(app.Router(), frontend.WithCacheControl("public, max-age=31536000")); err != nil {
-			app.Logger().Error("Failed to mount embedded frontend", log.Fields{"error": err})
+			l.Error("Failed to mount embedded frontend", log.Fields{"error": err})
 		} else {
-			app.Logger().Info("Embedded frontend mounted", nil)
+			l.Info("Embedded frontend mounted", nil)
 		}
 	}
 
@@ -89,6 +90,6 @@ func main() {
 	// HTTPS can also be enabled via command line flags:
 	// ./simple -tls -tls-cert ./cert.pem -tls-key ./key.pem
 	if err := app.Boot(); err != nil {
-		app.Logger().Error("Failed to boot application", log.Fields{"error": err})
+		l.Error("Failed to boot application", log.Fields{"error": err})
 	}
 }
