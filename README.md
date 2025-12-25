@@ -14,6 +14,7 @@ It includes dynamic routing, middleware, graceful shutdown, and environment-base
 * **Env Configuration**: Supports `.env` files (e.g., log level, etc.)
 * **Test Coverage**: Includes tests for routing, middleware, 404 handling, and more
 * **Developer Toolchain**: Comes with a `Makefile` and `dev.sh` script for easy build/run/test workflows
+* **Static Frontend Hosting**: Serve built Node/Next.js bundles directly from the Go server (flag: `-frontend-dir`, env: `FRONTEND_DIR`)
 
 ## Getting Started
 
@@ -35,6 +36,28 @@ make run   # Build and start the server (default port: 8080)
 
 ```bash
 ./golang_simple_server -addr :9090  # Start on port 9090
+```
+
+### Serve a built Node/Next.js frontend
+
+Point the server at a production build directory (for example `next export` output in `./web/out`):
+
+```bash
+./golang_simple_server -frontend-dir ./web/out
+# or
+FRONTEND_DIR=./web/out ./golang_simple_server
+```
+
+The `-frontend-dir` flag has the highest priority and overrides `FRONTEND_DIR`.
+
+All assets under the directory are served with SPA-style fallback to `index.html`, making it suitable for exported Next.js/Vite/React builds.
+
+To ship a single self-contained binary, copy your built frontend (the same `frontend-dir` contents) into `pkg/frontend/embedded/` before building:
+
+```bash
+cp -r ./web/out/* pkg/frontend/embedded/
+go build ./...
+./golang_simple_server  # mounts embedded assets when no frontend dir/env is provided
 ```
 
 ## Routing
