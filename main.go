@@ -3,10 +3,13 @@ package main
 import (
 	"flag"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/spcent/golang_simple_server/handlers"
 	"github.com/spcent/golang_simple_server/pkg/core"
+	"github.com/spcent/golang_simple_server/pkg/frontend"
 	log "github.com/spcent/golang_simple_server/pkg/log"
 )
 
@@ -17,6 +20,7 @@ func main() {
 	tlsCertFile := flag.String("tls-cert", "./cert.pem", "Path to TLS certificate file")
 	tlsKeyFile := flag.String("tls-key", "./key.pem", "Path to TLS private key file")
 	debug := flag.Bool("debug", false, "Enable debug mode")
+	frontendDir := flag.String("frontend-dir", "", "Path to built frontend assets (Next.js export, etc.)")
 	gracefulTimeout := flag.Duration("graceful-timeout", 5*time.Second, "Graceful shutdown timeout")
 	flag.Parse()
 
@@ -51,6 +55,26 @@ func main() {
 	// Configure WebSocket with custom secret for JWT authentication
 	if _, err := app.ConfigureWebSocket(); err != nil {
 		app.Logger().Error("Failed to configure WebSocket", log.Fields{"error": err})
+	}
+
+	// Mount a built Node/Next.js frontend when provided via flag or env.
+	frontendDirValue := strings.TrimSpace(*frontendDir)
+	if frontendDirValue == "" {
+		frontendDirValue = strings.TrimSpace(os.Getenv("FRONTEND_DIR"))
+	}
+
+	if frontendDirValue != "" {
+		if err := frontend.RegisterFromDir(app.Router(), frontendDirValue, frontend.WithCacheControl("public, max-age=31536000")); err != nil {
+			app.Logger().Error("Failed to mount frontend", log.Fields{"error": err, "dir": frontendDirValue})
+		} else {
+			app.Logger().Info("Frontend mounted", log.Fields{"dir": frontendDirValue})
+		}
+	} else if frontend.HasEmbedded() {
+		if err := frontend.RegisterEmbedded(app.Router(), frontend.WithCacheControl("public, max-age=31536000")); err != nil {
+			app.Logger().Error("Failed to mount embedded frontend", log.Fields{"error": err})
+		} else {
+			app.Logger().Info("Embedded frontend mounted", nil)
+		}
 	}
 
 	// Register routes via handlers package
