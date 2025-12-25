@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/spcent/golang_simple_server/pkg/contract"
+	webhook "github.com/spcent/golang_simple_server/pkg/net/webhookout"
 	"github.com/spcent/golang_simple_server/pkg/router"
-	"github.com/spcent/golang_simple_server/pkg/webhook"
 )
 
 type WebhookHandler struct {

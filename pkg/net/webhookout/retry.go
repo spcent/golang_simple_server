@@ -1,4 +1,4 @@
-package webhook
+package webhookout
 
 import (
 	"math/rand"

@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/spcent/golang_simple_server/pkg/contract"
+	"github.com/spcent/golang_simple_server/pkg/net/webhookin"
 	"github.com/spcent/golang_simple_server/pkg/pubsub"
 	"github.com/spcent/golang_simple_server/pkg/router"
-	"github.com/spcent/golang_simple_server/pkg/webhookin"
 )
 
 type WebhookInHandler struct {
