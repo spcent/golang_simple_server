@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/spcent/golang_simple_server/pkg/contract"
 )
 
 type mockController struct {
@@ -18,57 +20,57 @@ type mockController struct {
 
 func (m *mockController) Index(w http.ResponseWriter, r *http.Request) {
 	m.indexCalled++
-	m.lastParams = RequestContextFrom(r.Context()).Params
+	m.lastParams = contract.RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusOK)
 }
 
 func (m *mockController) Show(w http.ResponseWriter, r *http.Request) {
 	m.showCalled++
-	m.lastParams = RequestContextFrom(r.Context()).Params
+	m.lastParams = contract.RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusOK)
 }
 
 func (m *mockController) Create(w http.ResponseWriter, r *http.Request) {
 	m.createCalled++
-	m.lastParams = RequestContextFrom(r.Context()).Params
+	m.lastParams = contract.RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusCreated)
 }
 
 func (m *mockController) Update(w http.ResponseWriter, r *http.Request) {
 	m.updateCalled++
-	m.lastParams = RequestContextFrom(r.Context()).Params
+	m.lastParams = contract.RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusOK)
 }
 
 func (m *mockController) Delete(w http.ResponseWriter, r *http.Request) {
 	m.deleteCalled++
-	m.lastParams = RequestContextFrom(r.Context()).Params
+	m.lastParams = contract.RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (m *mockController) Patch(w http.ResponseWriter, r *http.Request) {
 	m.patchCalled++
-	m.lastParams = RequestContextFrom(r.Context()).Params
+	m.lastParams = contract.RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusOK)
 }
 
 func (m *mockController) Options(w http.ResponseWriter, r *http.Request) {
-	m.lastParams = RequestContextFrom(r.Context()).Params
+	m.lastParams = contract.RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (m *mockController) Head(w http.ResponseWriter, r *http.Request) {
-	m.lastParams = RequestContextFrom(r.Context()).Params
+	m.lastParams = contract.RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusOK)
 }
 
 func (m *mockController) BatchCreate(w http.ResponseWriter, r *http.Request) {
-	m.lastParams = RequestContextFrom(r.Context()).Params
+	m.lastParams = contract.RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusCreated)
 }
 
 func (m *mockController) BatchDelete(w http.ResponseWriter, r *http.Request) {
-	m.lastParams = RequestContextFrom(r.Context()).Params
+	m.lastParams = contract.RequestContextFrom(r.Context()).Params
 	w.WriteHeader(http.StatusNoContent)
 }
 

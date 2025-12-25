@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/spcent/golang_simple_server/pkg/config"
+	"github.com/spcent/golang_simple_server/pkg/contract"
 	"github.com/spcent/golang_simple_server/pkg/health"
 	log "github.com/spcent/golang_simple_server/pkg/log"
 	"github.com/spcent/golang_simple_server/pkg/middleware"
@@ -268,27 +269,27 @@ func (a *App) Any(path string, handler http.HandlerFunc) {
 }
 
 // Context-aware registration helpers keep compatibility with net/http while exposing the unified Ctx.
-func (a *App) GetCtx(path string, handler router.CtxHandlerFunc) {
+func (a *App) GetCtx(path string, handler contract.CtxHandlerFunc) {
 	a.Router().GetCtx(path, handler)
 }
 
-func (a *App) PostCtx(path string, handler router.CtxHandlerFunc) {
+func (a *App) PostCtx(path string, handler contract.CtxHandlerFunc) {
 	a.Router().PostCtx(path, handler)
 }
 
-func (a *App) PutCtx(path string, handler router.CtxHandlerFunc) {
+func (a *App) PutCtx(path string, handler contract.CtxHandlerFunc) {
 	a.Router().PutCtx(path, handler)
 }
 
-func (a *App) DeleteCtx(path string, handler router.CtxHandlerFunc) {
+func (a *App) DeleteCtx(path string, handler contract.CtxHandlerFunc) {
 	a.Router().DeleteCtx(path, handler)
 }
 
-func (a *App) PatchCtx(path string, handler router.CtxHandlerFunc) {
+func (a *App) PatchCtx(path string, handler contract.CtxHandlerFunc) {
 	a.Router().PatchCtx(path, handler)
 }
 
-func (a *App) AnyCtx(path string, handler router.CtxHandlerFunc) {
+func (a *App) AnyCtx(path string, handler contract.CtxHandlerFunc) {
 	a.Router().AnyCtx(path, handler)
 }
 

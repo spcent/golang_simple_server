@@ -1,4 +1,4 @@
-package router
+package contract
 
 import (
 	"bytes"
@@ -14,7 +14,6 @@ import (
 	"time"
 
 	log "github.com/spcent/golang_simple_server/pkg/log"
-	"github.com/spcent/golang_simple_server/pkg/middleware"
 )
 
 // RequestContext contains request-scoped data that should be shared across middleware and handlers.
@@ -23,7 +22,7 @@ type RequestContext struct {
 	Params map[string]string
 }
 
-type requestContextKey struct{}
+type RequestContextKey struct{}
 
 // Ctx is a unified context object shared by handlers.
 // It exposes common request-scoped attributes and helper methods for writing responses.
@@ -72,6 +71,25 @@ func (e *BindError) Unwrap() error {
 	return e.Err
 }
 
+type ParamsContextKey struct{}
+
+// ParamsFromContext returns route parameters stored in the request context.
+// It returns nil if no parameters were attached.
+func ParamsFromContext(ctx context.Context) map[string]string {
+	if ctx == nil {
+		return nil
+	}
+	if params, ok := ctx.Value(ParamsContextKey{}).(map[string]string); ok {
+		return params
+	}
+
+	if rc, ok := ctx.Value(RequestContextKey{}).(RequestContext); ok {
+		return rc.Params
+	}
+
+	return nil
+}
+
 // RequestContextFrom returns the RequestContext stored in the given context.
 // If none is present, it falls back to parameters stored via ParamsFromContext for backward compatibility.
 func RequestContextFrom(ctx context.Context) RequestContext {
@@ -79,7 +97,7 @@ func RequestContextFrom(ctx context.Context) RequestContext {
 		return RequestContext{}
 	}
 
-	if rc, ok := ctx.Value(requestContextKey{}).(RequestContext); ok {
+	if rc, ok := ctx.Value(RequestContextKey{}).(RequestContext); ok {
 		return rc
 	}
 
@@ -108,7 +126,7 @@ func newCtxWithLogger(w http.ResponseWriter, r *http.Request, params map[string]
 		params = map[string]string{}
 	}
 
-	traceID := middleware.TraceIDFromContext(r.Context())
+	traceID := TraceIDFromContext(r.Context())
 	deadline, _ := r.Context().Deadline()
 
 	if logger == nil {
@@ -126,6 +144,18 @@ func newCtxWithLogger(w http.ResponseWriter, r *http.Request, params map[string]
 		TraceID:  traceID,
 		Deadline: deadline,
 	}
+}
+
+func (c *Ctx) ErrorJSON(status int, errCode string, message string, details map[string]any) error {
+	payload := APIError{
+		Status:   status,
+		Code:     errCode,
+		Message:  message,
+		Details:  details,
+		TraceID:  c.TraceID,
+		Category: CategoryBusiness,
+	}
+	return c.JSON(status, payload)
 }
 
 // JSON writes a JSON response with the given status code.
@@ -163,6 +193,22 @@ func (c *Ctx) File(path string) error {
 	return nil
 }
 
+func (c *Ctx) Param(key string) (string, bool) {
+	if c.Params == nil {
+		return "", false
+	}
+	val, ok := c.Params[key]
+	return val, ok
+}
+
+func (c *Ctx) MustParam(key string) (string, error) {
+	val, ok := c.Param(key)
+	if !ok || strings.TrimSpace(val) == "" {
+		return "", errors.New("missing param: " + key)
+	}
+	return val, nil
+}
+
 // BindJSON binds the request JSON body to the provided destination structure.
 // It performs minimal validation and returns a BindError on failure.
 func (c *Ctx) BindJSON(dst any) error {
@@ -176,12 +222,15 @@ func (c *Ctx) BindJSON(dst any) error {
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	// DisallowUnknownFields could be enabled if you want strict mode:
+	// decoder.DisallowUnknownFields()
+
 	if err := decoder.Decode(dst); err != nil {
 		return &BindError{Status: http.StatusBadRequest, Message: "invalid JSON payload", Err: err}
 	}
 
-	// Prevent silent acceptance of extra data
-	if decoder.More() {
+	// Ensure no trailing data
+	if decoder.Decode(&struct{}{}) != io.EOF {
 		return &BindError{Status: http.StatusBadRequest, Message: "unexpected extra JSON data"}
 	}
 

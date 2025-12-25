@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"time"
+
+	"github.com/spcent/golang_simple_server/pkg/contract"
 )
 
 // Timeout creates a middleware that enforces a maximum duration for a request.
@@ -29,10 +31,10 @@ func Timeout(d time.Duration) Middleware {
 			case <-done:
 				tw.WriteTo(w)
 			case <-ctx.Done():
-				WriteError(w, r, APIError{
+				contract.WriteError(w, r, contract.APIError{
 					Status:   http.StatusGatewayTimeout,
 					Code:     "request_timeout",
-					Category: CategoryServer,
+					Category: contract.CategoryServer,
 					Message:  "request timed out",
 				})
 			}

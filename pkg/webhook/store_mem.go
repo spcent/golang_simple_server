@@ -114,6 +114,13 @@ func (s *MemStore) CreateDelivery(ctx context.Context, d Delivery) (Delivery, er
 	now := time.Now().UTC()
 	d.CreatedAt = now
 	d.UpdatedAt = now
+
+	if d.PayloadJSON != nil {
+		b := make([]byte, len(d.PayloadJSON))
+		copy(b, d.PayloadJSON)
+		d.PayloadJSON = b
+	}
+
 	s.deliveries[d.ID] = d
 	return d, nil
 }
@@ -125,6 +132,7 @@ func (s *MemStore) UpdateDelivery(ctx context.Context, id string, patch Delivery
 	if !ok {
 		return Delivery{}, ErrNotFound
 	}
+
 	if patch.Attempt != nil {
 		d.Attempt = *patch.Attempt
 	}
@@ -146,6 +154,13 @@ func (s *MemStore) UpdateDelivery(ctx context.Context, id string, patch Delivery
 	if patch.LastRespSnippet != nil {
 		d.LastRespSnippet = *patch.LastRespSnippet
 	}
+	if patch.PayloadJSON != nil {
+		// store a copy to avoid caller mutation
+		b := make([]byte, len(*patch.PayloadJSON))
+		copy(b, *patch.PayloadJSON)
+		d.PayloadJSON = b
+	}
+
 	d.UpdatedAt = time.Now().UTC()
 	s.deliveries[id] = d
 	return d, nil

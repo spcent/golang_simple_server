@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 
+	contract "github.com/spcent/golang_simple_server/pkg/contract"
 	log "github.com/spcent/golang_simple_server/pkg/log"
 )
 
@@ -12,15 +13,15 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				WriteError(w, r, APIError{
+				contract.WriteError(w, r, contract.APIError{
 					Status:   http.StatusInternalServerError,
 					Code:     "internal_error",
-					Category: CategoryServer,
+					Category: contract.CategoryServer,
 					Message:  "internal server error",
 					Details:  map[string]any{"panic": rec},
 				})
 				logger := log.NewGLogger()
-				logger.WithFields(log.Fields{"panic": rec, "trace_id": TraceIDFromContext(r.Context())}).Error("panic recovered", nil)
+				logger.WithFields(log.Fields{"panic": rec, "trace_id": contract.TraceIDFromContext(r.Context())}).Error("panic recovered", nil)
 			}
 		}()
 		next.ServeHTTP(w, r)

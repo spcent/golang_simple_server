@@ -2,11 +2,13 @@ package router
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/spcent/golang_simple_server/pkg/contract"
 	"github.com/spcent/golang_simple_server/pkg/middleware"
 )
 
@@ -48,8 +50,8 @@ func TestParamRoutes(t *testing.T) {
 	r := NewRouter()
 
 	r.GetFunc("/hello/:name", func(w http.ResponseWriter, r *http.Request) {
-		name, _ := Param(r, "name")
-		ctxParams := ParamsFromContext(r.Context())
+		name, _ := contract.Param(r, "name")
+		ctxParams := contract.ParamsFromContext(r.Context())
 		if ctxParams["name"] != name {
 			t.Fatalf("context params mismatch: got %s want %s", ctxParams["name"], name)
 		}
@@ -57,9 +59,9 @@ func TestParamRoutes(t *testing.T) {
 	})
 
 	r.GetFunc("/users/:id/books/:bookId", func(w http.ResponseWriter, r *http.Request) {
-		id, _ := Param(r, "id")
-		bookID, _ := Param(r, "bookId")
-		ctxParams := ParamsFromContext(r.Context())
+		id, _ := contract.Param(r, "id")
+		bookID, _ := contract.Param(r, "bookId")
+		ctxParams := contract.ParamsFromContext(r.Context())
 		if ctxParams["id"] != id || ctxParams["bookId"] != bookID {
 			t.Fatalf("context params mismatch: %v", ctxParams)
 		}
@@ -91,12 +93,12 @@ func TestParamsInjectedIntoContext(t *testing.T) {
 	r := NewRouter()
 
 	r.GetFunc("/hello/:name", func(w http.ResponseWriter, r *http.Request) {
-		ctxParams := ParamsFromContext(r.Context())
+		ctxParams := contract.ParamsFromContext(r.Context())
 		if ctxParams == nil {
 			t.Fatalf("expected params in context")
 		}
 
-		paramVal, ok := Param(r, "name")
+		paramVal, ok := contract.Param(r, "name")
 		if !ok {
 			t.Fatalf("expected Param helper to find name")
 		}
@@ -121,17 +123,17 @@ func TestRequestContextHelpers(t *testing.T) {
 	r := NewRouter()
 
 	r.GetFunc("/hello/:name", func(w http.ResponseWriter, r *http.Request) {
-		rc := RequestContextFrom(r.Context())
-		name, _ := Param(r, "name")
+		rc := contract.RequestContextFrom(r.Context())
+		name, _ := contract.Param(r, "name")
 		if rc.Params["name"] != name {
 			t.Fatalf("request context params mismatch: got %s want %s", rc.Params["name"], name)
 		}
 
-		if val, ok := Param(r, "name"); !ok || val != name {
+		if val, ok := contract.Param(r, "name"); !ok || val != name {
 			t.Fatalf("Param helper mismatch: got %s (exists=%t) want %s", val, ok, name)
 		}
 
-		if _, ok := Param(r, "missing"); ok {
+		if _, ok := contract.Param(r, "missing"); ok {
 			t.Fatalf("expected missing parameter to return ok=false")
 		}
 
@@ -152,12 +154,12 @@ func TestContextHandlerRegistration(t *testing.T) {
 	r := NewRouter()
 
 	r.GetFunc("/ctx/:id", func(w http.ResponseWriter, r *http.Request) {
-		rc := RequestContextFrom(r.Context())
+		rc := contract.RequestContextFrom(r.Context())
 		if rc.Params == nil {
 			t.Fatalf("expected RequestContext to be present")
 		}
 
-		paramVal, ok := Param(r, "id")
+		paramVal, ok := contract.Param(r, "id")
 		if !ok {
 			t.Fatalf("expected Param helper to find id")
 		}
@@ -249,8 +251,8 @@ func TestRouteGroup(t *testing.T) {
 	v2 := api.Group("/v2")
 
 	v1.GetFunc("/users/:id", func(w http.ResponseWriter, r *http.Request) {
-		id, _ := Param(r, "id")
-		ctxParams := ParamsFromContext(r.Context())
+		id, _ := contract.Param(r, "id")
+		ctxParams := contract.ParamsFromContext(r.Context())
 		if ctxParams["id"] != id {
 			t.Fatalf("expected id in context")
 		}
@@ -326,4 +328,32 @@ func TestRouterFreeze(t *testing.T) {
 	}()
 
 	r.Get("/panic", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+}
+
+func TestRouterCtxHandler(t *testing.T) {
+	r := NewRouter()
+	r.GetCtx("/hello/:name", func(ctx *contract.Ctx) {
+		_ = ctx.JSON(http.StatusOK, map[string]string{
+			"name":  ctx.Params["name"],
+			"trace": ctx.TraceID,
+		})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/hello/gopher", nil)
+	recorder := httptest.NewRecorder()
+
+	r.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200 got %d", recorder.Code)
+	}
+
+	var payload map[string]string
+	if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if payload["name"] != "gopher" {
+		t.Fatalf("expected param to be available, got %+v", payload)
+	}
 }

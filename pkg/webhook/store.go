@@ -18,11 +18,15 @@ type Store interface {
 }
 
 type DeliveryPatch struct {
-	Attempt         *int
-	Status          *DeliveryStatus
-	NextAt          *time.Time // if set, overwrite; if nil, keep (no "clear" in this version)
+	Attempt *int
+	Status  *DeliveryStatus
+	NextAt  *time.Time
+
 	LastHTTPStatus  *int
 	LastError       *string
 	LastDurationMs  *int
 	LastRespSnippet *string
+
+	// optional: update payload (rare)
+	PayloadJSON *[]byte
 }

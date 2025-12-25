@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/spcent/golang_simple_server/pkg/contract"
 )
 
 // Static registers a route that serves files from a local directory
@@ -21,7 +23,7 @@ func (r *Router) Static(prefix, dir string) {
 
 	// Register a GET route with wildcard *filepath
 	r.GetFunc(prefix+"/*filepath", func(w http.ResponseWriter, req *http.Request) {
-		relPath, _ := Param(req, "filepath")
+		relPath, _ := contract.Param(req, "filepath")
 
 		// Clean the relative path to avoid directory traversal (e.g., "../../etc/passwd")
 		cleanPath := filepath.Clean(relPath)
@@ -59,7 +61,7 @@ func (r *Router) StaticFS(prefix string, fs http.FileSystem) {
 
 	// Register a GET route with wildcard *filepath
 	r.GetFunc(prefix+"/*filepath", func(w http.ResponseWriter, req *http.Request) {
-		relPath, _ := Param(req, "filepath")
+		relPath, _ := contract.Param(req, "filepath")
 
 		// Clean the relative path to avoid directory traversal
 		cleanPath := filepath.Clean(relPath)

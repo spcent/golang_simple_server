@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spcent/golang_simple_server/pkg/contract"
 )
 
 func TestBodyLimit(t *testing.T) {
@@ -27,7 +29,7 @@ func TestBodyLimit(t *testing.T) {
 		t.Fatalf("expected 413, got %d", w.Code)
 	}
 
-	var resp ErrorResponse
+	var resp contract.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -59,7 +61,7 @@ func TestConcurrencyLimit(t *testing.T) {
 		t.Fatalf("expected 503 for queued request, got %d", w.Code)
 	}
 
-	var resp ErrorResponse
+	var resp contract.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}

@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/spcent/golang_simple_server/pkg/contract"
 )
 
 func TestTimeoutMiddleware_TimesOut(t *testing.T) {
@@ -27,7 +29,7 @@ func TestTimeoutMiddleware_TimesOut(t *testing.T) {
 
 	wrapped(rr, req)
 
-	var resp ErrorResponse
+	var resp contract.ErrorResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -36,7 +38,7 @@ func TestTimeoutMiddleware_TimesOut(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusGatewayTimeout, rr.Code)
 	}
 
-	if resp.Error.Code != "request_timeout" || resp.Error.Category != CategoryServer {
+	if resp.Error.Code != "request_timeout" || resp.Error.Category != contract.CategoryServer {
 		t.Fatalf("unexpected response payload: %+v", resp)
 	}
 

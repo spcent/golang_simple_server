@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"github.com/spcent/golang_simple_server/pkg/contract"
 )
 
 func TestRecoveryMiddleware(t *testing.T) {
@@ -63,14 +65,14 @@ func TestRecoveryMiddleware(t *testing.T) {
 			}
 
 			if tt.shouldPanic {
-				var response ErrorResponse
+				var response contract.ErrorResponse
 				if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 					t.Fatalf("failed to unmarshal response: %v", err)
 				}
 				if response.Error.Code != "internal_error" {
 					t.Errorf("expected error code internal_error, got %s", response.Error.Code)
 				}
-				if response.Error.Category != CategoryServer {
+				if response.Error.Category != contract.CategoryServer {
 					t.Errorf("expected server error category, got %s", response.Error.Category)
 				}
 			} else if body := w.Body.String(); body != "success" {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/spcent/golang_simple_server/pkg/contract"
 	log "github.com/spcent/golang_simple_server/pkg/log"
 	"github.com/spcent/golang_simple_server/pkg/middleware"
 )
@@ -68,25 +69,6 @@ type Router struct {
 	parent      *Router                 // Parent router for groups
 	middlewares []middleware.Middleware // Group-level middlewares
 	logger      log.StructuredLogger    // Logger for contextual handlers
-}
-
-type paramsContextKey struct{}
-
-// ParamsFromContext returns route parameters stored in the request context.
-// It returns nil if no parameters were attached.
-func ParamsFromContext(ctx context.Context) map[string]string {
-	if ctx == nil {
-		return nil
-	}
-	if params, ok := ctx.Value(paramsContextKey{}).(map[string]string); ok {
-		return params
-	}
-
-	if rc, ok := ctx.Value(requestContextKey{}).(RequestContext); ok {
-		return rc.Params
-	}
-
-	return nil
 }
 
 func NewRouter() *Router {
@@ -319,12 +301,12 @@ func (r *Router) insertChild(parent *node, child *node) {
 	parent.children = append(parent.children[:i], append([]*node{child}, parent.children[i:]...)...)
 }
 
-func (r *Router) addCtxRoute(method, path string, h CtxHandlerFunc) {
-	if err := ValidateCtxHandler(h); err != nil {
+func (r *Router) addCtxRoute(method, path string, h contract.CtxHandlerFunc) {
+	if err := contract.ValidateCtxHandler(h); err != nil {
 		panic(err.Error())
 	}
 
-	r.AddRoute(method, path, AdaptCtxHandler(h, r.logger))
+	r.AddRoute(method, path, contract.AdaptCtxHandler(h, r.logger))
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -391,21 +373,21 @@ func (r *Router) applyMiddlewareAndServe(w http.ResponseWriter, req *http.Reques
 	ctx := req.Context()
 
 	if len(params) > 0 {
-		ctx = context.WithValue(ctx, paramsContextKey{}, params)
+		ctx = context.WithValue(ctx, contract.ParamsContextKey{}, params)
 	}
 
 	// Always install a RequestContext so downstream code has a predictable place to read/write
 	// request-scoped data without custom type assertions.
-	existingRC, ok := ctx.Value(requestContextKey{}).(RequestContext)
+	existingRC, ok := ctx.Value(contract.RequestContextKey{}).(contract.RequestContext)
 	if !ok {
-		existingRC = RequestContext{}
+		existingRC = contract.RequestContext{}
 	}
 
 	if len(params) > 0 {
 		existingRC.Params = params
 	}
 
-	ctx = context.WithValue(ctx, requestContextKey{}, existingRC)
+	ctx = context.WithValue(ctx, contract.RequestContextKey{}, existingRC)
 	if ctx != req.Context() {
 		reqWithParams = req.WithContext(ctx)
 	}
@@ -528,12 +510,12 @@ func (r *Router) Patch(path string, h Handler)  { r.AddRoute(PATCH, path, h) }
 func (r *Router) Any(path string, h Handler)    { r.AddRoute(ANY, path, h) }
 
 // Context-aware handler registration helpers
-func (r *Router) GetCtx(path string, h CtxHandlerFunc)    { r.addCtxRoute(GET, path, h) }
-func (r *Router) PostCtx(path string, h CtxHandlerFunc)   { r.addCtxRoute(POST, path, h) }
-func (r *Router) PutCtx(path string, h CtxHandlerFunc)    { r.addCtxRoute(PUT, path, h) }
-func (r *Router) DeleteCtx(path string, h CtxHandlerFunc) { r.addCtxRoute(DELETE, path, h) }
-func (r *Router) PatchCtx(path string, h CtxHandlerFunc)  { r.addCtxRoute(PATCH, path, h) }
-func (r *Router) AnyCtx(path string, h CtxHandlerFunc)    { r.addCtxRoute(ANY, path, h) }
+func (r *Router) GetCtx(path string, h contract.CtxHandlerFunc)    { r.addCtxRoute(GET, path, h) }
+func (r *Router) PostCtx(path string, h contract.CtxHandlerFunc)   { r.addCtxRoute(POST, path, h) }
+func (r *Router) PutCtx(path string, h contract.CtxHandlerFunc)    { r.addCtxRoute(PUT, path, h) }
+func (r *Router) DeleteCtx(path string, h contract.CtxHandlerFunc) { r.addCtxRoute(DELETE, path, h) }
+func (r *Router) PatchCtx(path string, h contract.CtxHandlerFunc)  { r.addCtxRoute(PATCH, path, h) }
+func (r *Router) AnyCtx(path string, h contract.CtxHandlerFunc)    { r.addCtxRoute(ANY, path, h) }
 
 // HandleFunc registers a standard http.HandlerFunc for the given path and method
 func (r *Router) HandleFunc(method, path string, h http.HandlerFunc) {

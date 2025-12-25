@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	contract "github.com/spcent/golang_simple_server/pkg/contract"
 	log "github.com/spcent/golang_simple_server/pkg/log"
 )
 
@@ -92,7 +93,7 @@ func (t *stubTracer) Start(ctx context.Context, r *http.Request) (context.Contex
 	t.startLock.Lock()
 	defer t.startLock.Unlock()
 	t.started = true
-	t.received = TraceIDFromContext(ctx)
+	t.received = contract.TraceIDFromContext(ctx)
 	t.span = &stubSpan{}
 	return ctx, t.span
 }
@@ -105,7 +106,7 @@ func TestLoggingAddsStructuredFields(t *testing.T) {
 	middleware := Logging(logger, metrics, tracer)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if TraceIDFromContext(r.Context()) == "" {
+		if contract.TraceIDFromContext(r.Context()) == "" {
 			t.Fatalf("trace id should be present in context")
 		}
 		w.WriteHeader(http.StatusCreated)
@@ -165,7 +166,7 @@ func TestLoggingGeneratesTraceIDWhenMissing(t *testing.T) {
 	middleware := Logging(logger, nil, nil)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if TraceIDFromContext(r.Context()) == "" {
+		if contract.TraceIDFromContext(r.Context()) == "" {
 			t.Fatalf("generated trace id should be in context")
 		}
 		w.Write([]byte("generated"))

@@ -7,10 +7,9 @@ import (
 	"net/http"
 	"time"
 
+	contract "github.com/spcent/golang_simple_server/pkg/contract"
 	log "github.com/spcent/golang_simple_server/pkg/log"
 )
-
-type traceIDKey struct{}
 
 // RequestMetrics captures common observability attributes for a request.
 type RequestMetrics struct {
@@ -43,7 +42,7 @@ func Logging(logger log.StructuredLogger, metrics MetricsCollector, tracer Trace
 	return func(next Handler) Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			traceID := ensureTraceID(r)
-			ctx := context.WithValue(r.Context(), traceIDKey{}, traceID)
+			ctx := context.WithValue(r.Context(), contract.TraceIDKey{}, traceID)
 			r = r.WithContext(ctx)
 			w.Header().Set("X-Request-ID", traceID)
 
@@ -89,14 +88,6 @@ func Logging(logger log.StructuredLogger, metrics MetricsCollector, tracer Trace
 			logger.WithFields(fields).Info("request completed", nil)
 		})
 	}
-}
-
-// TraceIDFromContext extracts the trace id injected by the Logging middleware.
-func TraceIDFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(traceIDKey{}).(string); ok {
-		return v
-	}
-	return ""
 }
 
 func ensureTraceID(r *http.Request) string {

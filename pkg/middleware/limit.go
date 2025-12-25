@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/spcent/golang_simple_server/pkg/contract"
 	log "github.com/spcent/golang_simple_server/pkg/log"
 )
 
@@ -77,10 +78,10 @@ func (l *limitedBodyReader) Close() error {
 func (l *limitedBodyReader) fail() (int, error) {
 	if !l.exceeded {
 		l.exceeded = true
-		WriteError(l.w, nil, APIError{
+		contract.WriteError(l.w, nil, contract.APIError{
 			Status:   http.StatusRequestEntityTooLarge,
 			Code:     "request_body_too_large",
-			Category: CategoryClient,
+			Category: contract.CategoryClient,
 			Message:  "request body exceeds configured limit",
 			Details: map[string]any{
 				"max_bytes":  l.maxBytes,
@@ -122,10 +123,10 @@ func ConcurrencyLimit(maxConcurrent, queueDepth int, queueTimeout time.Duration,
 			case queue <- struct{}{}:
 				defer func() { <-queue }()
 			default:
-				WriteError(w, r, APIError{
+				contract.WriteError(w, r, contract.APIError{
 					Status:   http.StatusServiceUnavailable,
 					Code:     "server_busy",
-					Category: CategoryServer,
+					Category: contract.CategoryServer,
 					Message:  "server is throttling concurrent requests",
 				})
 				return
@@ -138,10 +139,10 @@ func ConcurrencyLimit(maxConcurrent, queueDepth int, queueTimeout time.Duration,
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-timer.C:
-				WriteError(w, r, APIError{
+				contract.WriteError(w, r, contract.APIError{
 					Status:   http.StatusServiceUnavailable,
 					Code:     "server_queue_timeout",
-					Category: CategoryServer,
+					Category: contract.CategoryServer,
 					Message:  "request timed out waiting for an available worker",
 					Details:  map[string]any{"queue_depth": len(queue)},
 				})

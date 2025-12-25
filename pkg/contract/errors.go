@@ -1,4 +1,4 @@
-package middleware
+package contract
 
 import (
 	"encoding/json"

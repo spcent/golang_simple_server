@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/spcent/golang_simple_server/pkg/contract"
 )
 
 // createTestRouter builds a router with static and parameterized routes
@@ -20,12 +22,12 @@ func createTestRouter() *Router {
 
 	// Parameterized routes
 	r.AddRoute(GET, "/hello/:name", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name, _ := Param(r, "name")
+		name, _ := contract.Param(r, "name")
 		w.Write([]byte("Hello " + name))
 	}))
 	r.AddRoute(GET, "/users/:id/books/:bookId", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, _ := Param(r, "id")
-		bookID, _ := Param(r, "bookId")
+		id, _ := contract.Param(r, "id")
+		bookID, _ := contract.Param(r, "bookId")
 		w.Write([]byte("User " + id + " Book " + bookID))
 	}))
 

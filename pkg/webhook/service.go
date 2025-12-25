@@ -164,22 +164,36 @@ func (s *Service) GetDelivery(ctx context.Context, id string) (Delivery, bool) {
 func (s *Service) ListDeliveries(ctx context.Context, f DeliveryFilter) ([]Delivery, error) {
 	return s.store.ListDeliveries(ctx, f)
 }
-
 func (s *Service) ReplayDelivery(ctx context.Context, deliveryID string) (Delivery, error) {
 	d, ok := s.store.GetDelivery(ctx, deliveryID)
 	if !ok {
 		return Delivery{}, ErrNotFound
 	}
-	// create a new delivery for replay to preserve history
-	newD := Delivery{
-		ID:        newID(),
-		TargetID:  d.TargetID,
-		EventID:   d.EventID,
-		EventType: d.EventType,
-		Attempt:   0,
-		Status:    DeliveryPending,
+	if len(d.PayloadJSON) == 0 {
+		return Delivery{}, errors.New("delivery has no payload_json")
 	}
-	newD, err := s.store.CreateDelivery(ctx, newD)
+
+	newID := newID()
+
+	// Optional: keep the original payload verbatim, but update meta.delivery_id for the new delivery.
+	// 推荐：更新 delivery_id 以便接收方幂等键正确。
+	raw := d.PayloadJSON
+	raw2, err := rewriteDeliveryIDInPayload(raw, newID)
+	if err != nil {
+		// fallback to raw as-is
+		raw2 = raw
+	}
+
+	newD := Delivery{
+		ID:          newID,
+		TargetID:    d.TargetID,
+		EventID:     d.EventID,
+		EventType:   d.EventType,
+		PayloadJSON: raw2,
+		Attempt:     0,
+		Status:      DeliveryPending,
+	}
+	newD, err = s.store.CreateDelivery(ctx, newD)
 	if err != nil {
 		return Delivery{}, err
 	}
@@ -189,6 +203,22 @@ func (s *Service) ReplayDelivery(ctx context.Context, deliveryID string) (Delive
 	return newD, nil
 }
 
+func rewriteDeliveryIDInPayload(raw []byte, newDeliveryID string) ([]byte, error) {
+	// payload schema:
+	// { id, type, occurred_at, data, meta: { delivery_id, ... } }
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	meta, ok := m["meta"].(map[string]any)
+	if !ok || meta == nil {
+		meta = map[string]any{}
+	}
+	meta["delivery_id"] = newDeliveryID
+	m["meta"] = meta
+	return json.Marshal(m)
+}
+
 func (s *Service) TriggerEvent(ctx context.Context, e Event) (int, error) {
 	if strings.TrimSpace(e.Type) == "" {
 		return 0, errors.New("event type required")
@@ -196,10 +226,13 @@ func (s *Service) TriggerEvent(ctx context.Context, e Event) (int, error) {
 	if e.Data == nil {
 		e.Data = map[string]any{}
 	}
+	if e.Meta == nil {
+		e.Meta = map[string]any{}
+	}
+
 	e.ID = newID()
 	e.OccurredAt = time.Now().UTC()
 
-	// find matching targets
 	targets, err := s.store.ListTargets(ctx, TargetFilter{Enabled: boolPtr(true), Event: e.Type})
 	if err != nil {
 		return 0, err
@@ -207,14 +240,31 @@ func (s *Service) TriggerEvent(ctx context.Context, e Event) (int, error) {
 
 	count := 0
 	for _, t := range targets {
-		d := Delivery{
-			ID:        newID(),
-			TargetID:  t.ID,
-			EventID:   e.ID,
-			EventType: e.Type,
-			Attempt:   0,
-			Status:    DeliveryPending,
+		// Delivery ID first, so payload can include it
+		deliveryID := newID()
+
+		payload := map[string]any{
+			"id":          e.ID,
+			"type":        e.Type,
+			"occurred_at": e.OccurredAt.Format(time.RFC3339Nano),
+			"data":        e.Data,
+			"meta": mergeMeta(e.Meta, map[string]any{
+				"delivery_id": deliveryID,
+				"target_id":   t.ID,
+			}),
 		}
+		raw, _ := json.Marshal(payload)
+
+		d := Delivery{
+			ID:          deliveryID,
+			TargetID:    t.ID,
+			EventID:     e.ID,
+			EventType:   e.Type,
+			PayloadJSON: raw,
+			Attempt:     0,
+			Status:      DeliveryPending,
+		}
+
 		if _, err := s.store.CreateDelivery(ctx, d); err != nil {
 			continue
 		}
@@ -225,6 +275,17 @@ func (s *Service) TriggerEvent(ctx context.Context, e Event) (int, error) {
 		count++
 	}
 	return count, nil
+}
+
+func mergeMeta(a, b map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
 }
 
 func (s *Service) enqueue(ctx context.Context, t Task) error {
@@ -262,22 +323,24 @@ func (s *Service) handleTask(ctx context.Context, t Task) {
 		return
 	}
 
-	// attempt+1
-	attempt := d.Attempt + 1
-
-	// build payload
-	evPayload := map[string]any{
-		"id":          d.EventID,
-		"type":        d.EventType,
-		"occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"data":        map[string]any{}, // data can be expanded later: store event object if you add persistence
-		"meta": map[string]any{
-			"delivery_id": d.ID,
-			"target_id":   target.ID,
-			"attempt":     attempt,
-		},
+	// payload must exist for replayable delivery
+	raw := d.PayloadJSON
+	if len(raw) == 0 {
+		// mark failed permanently (data corruption)
+		attempt := d.Attempt + 1
+		msg := "missing payload_json"
+		st := DeliveryDead
+		patch := DeliveryPatch{
+			Attempt:   &attempt,
+			Status:    &st,
+			LastError: &msg,
+		}
+		_, _ = s.store.UpdateDelivery(ctx, d.ID, patch)
+		atomic.AddUint64(&s.metrics.Dead, 1)
+		return
 	}
-	raw, _ := json.Marshal(evPayload)
+
+	attempt := d.Attempt + 1
 
 	start := time.Now()
 	status, snippet, err := s.sendOnce(ctx, target, d, raw, attempt)
@@ -296,7 +359,6 @@ func (s *Service) handleTask(ctx context.Context, t Task) {
 		patch.LastError = &msg
 	}
 
-	// retry?
 	maxRetries := target.MaxRetries
 	if maxRetries <= 0 {
 		maxRetries = s.cfg.DefaultMaxRetries
@@ -308,7 +370,12 @@ func (s *Service) handleTask(ctx context.Context, t Task) {
 
 	if ShouldRetry(status, err, attempt, maxRetries, retryOn429) {
 		atomic.AddUint64(&s.metrics.Retried, 1)
-		nextAt := NextBackoff(time.Now().UTC(), attempt, ms(target.BackoffBaseMs, s.cfg.BackoffBase), ms(target.BackoffMaxMs, s.cfg.BackoffMax))
+		nextAt := NextBackoff(
+			time.Now().UTC(),
+			attempt,
+			ms(target.BackoffBaseMs, s.cfg.BackoffBase),
+			ms(target.BackoffMaxMs, s.cfg.BackoffMax),
+		)
 		st := DeliveryRetry
 		patch.Status = &st
 		patch.NextAt = &nextAt
@@ -317,7 +384,6 @@ func (s *Service) handleTask(ctx context.Context, t Task) {
 		return
 	}
 
-	// final status
 	if err == nil && status >= 200 && status <= 299 {
 		atomic.AddUint64(&s.metrics.SentOK, 1)
 		st := DeliverySuccess

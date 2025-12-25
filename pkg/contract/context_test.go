@@ -1,4 +1,4 @@
-package router
+package contract
 
 import (
 	"bytes"
@@ -108,33 +108,5 @@ func TestBindJSONErrors(t *testing.T) {
 				t.Fatalf("unexpected message: %s", bindErr.Message)
 			}
 		})
-	}
-}
-
-func TestRouterCtxHandler(t *testing.T) {
-	r := NewRouter()
-	r.GetCtx("/hello/:name", func(ctx *Ctx) {
-		_ = ctx.JSON(http.StatusOK, map[string]string{
-			"name":  ctx.Params["name"],
-			"trace": ctx.TraceID,
-		})
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/hello/gopher", nil)
-	recorder := httptest.NewRecorder()
-
-	r.ServeHTTP(recorder, req)
-
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected status 200 got %d", recorder.Code)
-	}
-
-	var payload map[string]string
-	if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if payload["name"] != "gopher" {
-		t.Fatalf("expected param to be available, got %+v", payload)
 	}
 }
