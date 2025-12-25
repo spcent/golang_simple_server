@@ -87,4 +87,6 @@ type DeliveryFilter struct {
 	Status   *DeliveryStatus
 	Limit    int
 	Cursor   string
+	From     *time.Time
+	To       *time.Time
 }

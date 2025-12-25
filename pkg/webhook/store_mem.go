@@ -195,6 +195,13 @@ func (s *MemStore) ListDeliveries(ctx context.Context, filter DeliveryFilter) ([
 		if filter.Status != nil && d.Status != *filter.Status {
 			continue
 		}
+		if filter.From != nil && d.CreatedAt.Before(*filter.From) {
+			continue
+		}
+		if filter.To != nil && d.CreatedAt.After(*filter.To) {
+			continue
+		}
+
 		all = append(all, d)
 	}
 
