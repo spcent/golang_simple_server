@@ -1,44 +1,45 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/spcent/golang_simple_server/pkg/contract"
+	"github.com/spcent/golang_simple_server/pkg/pubsub"
 	"github.com/spcent/golang_simple_server/pkg/router"
 	"github.com/spcent/golang_simple_server/pkg/webhookin"
 )
 
 type WebhookInHandler struct {
-	// Optional: override secrets via struct fields (useful for tests)
+	Pub pubsub.PubSub
+
+	// secrets can be injected (tests) or read from env
 	GitHubSecret string
 	StripeSecret string
 
-	// Stripe replay tolerance; default 5 minutes if zero.
+	// verify constraints
+	MaxBodyBytes    int64
 	StripeTolerance time.Duration
 
-	// Optional: max body size; default 1MB if zero.
-	MaxBodyBytes int64
+	// inbound idempotency
+	Deduper  *webhookin.Deduper
+	DedupTTL time.Duration
 }
 
 func (h *WebhookInHandler) Register(r *router.Router) {
-	// Inbound webhooks
 	r.PostCtx("/webhooks/in/github", h.GitHub)
 	r.PostCtx("/webhooks/in/stripe", h.Stripe)
 }
 
-/*
-|--------------------------------------------------------------------------
-| GitHub Inbound Webhook
-|--------------------------------------------------------------------------
-| - Validates X-Hub-Signature-256
-| - Reads body once (VerifyGitHub consumes body)
-| - Returns event info summary
-*/
-
 func (h *WebhookInHandler) GitHub(ctx *contract.Ctx) {
+	if h.Pub == nil {
+		ctx.ErrorJSON(http.StatusInternalServerError, "missing_pubsub", "pubsub is not configured", nil)
+		return
+	}
+
 	secret := strings.TrimSpace(h.GitHubSecret)
 	if secret == "" {
 		secret = strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_SECRET"))
@@ -49,47 +50,75 @@ func (h *WebhookInHandler) GitHub(ctx *contract.Ctx) {
 	}
 
 	maxBody := h.maxBody()
-
-	body, err := webhookin.VerifyGitHub(ctx.R, secret, maxBody)
+	raw, err := webhookin.VerifyGitHub(ctx.R, secret, maxBody)
 	if err != nil {
-		// signature invalid or body read error
-		ctx.ErrorJSON(http.StatusUnauthorized, "invalid_signature", "invalid GitHub signature", map[string]any{
-			"provider": "github",
+		ctx.ErrorJSON(http.StatusUnauthorized, "invalid_signature", "invalid GitHub signature", nil)
+		return
+	}
+
+	event := strings.TrimSpace(ctx.Headers.Get("X-GitHub-Event"))
+	delivery := strings.TrimSpace(ctx.Headers.Get("X-GitHub-Delivery"))
+	if event == "" {
+		event = "unknown"
+	}
+	if delivery == "" {
+		// still allow but cannot dedup reliably
+		delivery = "unknown"
+	}
+
+	// Dedup: prefer GitHub delivery id
+	d := h.ensureDeduper()
+	if delivery != "unknown" && d.SeenBefore("github:"+delivery) {
+		// at-least-once semantics: GitHub may resend; we return 200 to stop further retries
+		ctx.JSON(http.StatusOK, map[string]any{
+			"ok":          true,
+			"provider":    "github",
+			"event_type":  event,
+			"delivery_id": delivery,
+			"deduped":     true,
+			"trace_id":    ctx.TraceID,
 		})
 		return
 	}
 
-	ghEvent := strings.TrimSpace(ctx.Headers.Get("X-GitHub-Event"))
-	ghDelivery := strings.TrimSpace(ctx.Headers.Get("X-GitHub-Delivery"))
+	topic := "in.github." + sanitizeTopicSuffix(event)
 
-	// Parse common fields (best-effort)
-	eventID := extractJSONFieldString(body, "id") // not always present for all GH events
-	repoFullName := extractJSONPathString(body, "repository", "full_name")
-	action := extractJSONFieldString(body, "action")
+	msg := pubsub.Message{
+		ID:    delivery, // good enough for in-proc
+		Topic: topic,
+		Type:  event,
+		Time:  time.Now().UTC(),
+		Data:  json.RawMessage(raw), // immutable bytes; consumers can unmarshal if needed
+		Meta: map[string]string{
+			"source":      "github",
+			"trace_id":    ctx.TraceID,
+			"delivery_id": delivery,
+			"event_type":  event,
+			"client_ip":   ctx.ClientIP,
+		},
+	}
 
+	_ = h.Pub.Publish(topic, msg)
+
+	// Minimal response for webhook sender
 	ctx.JSON(http.StatusOK, map[string]any{
 		"ok":          true,
 		"provider":    "github",
-		"event_type":  ghEvent,
-		"delivery_id": ghDelivery,
-		"event_id":    eventID,
-		"repo":        repoFullName,
-		"action":      action,
+		"topic":       topic,
+		"event_type":  event,
+		"delivery_id": delivery,
+		"deduped":     false,
 		"trace_id":    ctx.TraceID,
-		"body_bytes":  len(body),
+		"body_bytes":  len(raw),
 	})
 }
 
-/*
-|--------------------------------------------------------------------------
-| Stripe Inbound Webhook
-|--------------------------------------------------------------------------
-| - Validates Stripe-Signature
-| - Enforces tolerance window (replay protection)
-| - Returns Stripe event summary
-*/
-
 func (h *WebhookInHandler) Stripe(ctx *contract.Ctx) {
+	if h.Pub == nil {
+		ctx.ErrorJSON(http.StatusInternalServerError, "missing_pubsub", "pubsub is not configured", nil)
+		return
+	}
+
 	secret := strings.TrimSpace(h.StripeSecret)
 	if secret == "" {
 		secret = strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))
@@ -105,34 +134,67 @@ func (h *WebhookInHandler) Stripe(ctx *contract.Ctx) {
 		tol = 5 * time.Minute
 	}
 
-	body, err := webhookin.VerifyStripe(ctx.R, secret, webhookin.StripeVerifyOptions{
+	raw, err := webhookin.VerifyStripe(ctx.R, secret, webhookin.StripeVerifyOptions{
 		MaxBody:   maxBody,
 		Tolerance: tol,
 	})
 	if err != nil {
-		ctx.ErrorJSON(http.StatusUnauthorized, "invalid_signature", "invalid Stripe signature", map[string]any{
-			"provider": "stripe",
+		ctx.ErrorJSON(http.StatusUnauthorized, "invalid_signature", "invalid Stripe signature", nil)
+		return
+	}
+
+	// Stripe event id and type (best effort)
+	evtID := extractJSONFieldString(raw, "id")
+	evtType := extractJSONFieldString(raw, "type")
+	if evtType == "" {
+		evtType = "unknown"
+	}
+	if evtID == "" {
+		evtID = "unknown"
+	}
+
+	// Dedup: prefer Stripe event id
+	d := h.ensureDeduper()
+	if evtID != "unknown" && d.SeenBefore("stripe:"+evtID) {
+		ctx.JSON(http.StatusOK, map[string]any{
+			"ok":         true,
+			"provider":   "stripe",
+			"event_type": evtType,
+			"event_id":   evtID,
+			"deduped":    true,
+			"trace_id":   ctx.TraceID,
 		})
 		return
 	}
 
-	// Stripe event commonly has "id" and "type"
-	stripeEventID := extractJSONFieldString(body, "id")
-	stripeEventType := extractJSONFieldString(body, "type")
+	topic := "in.stripe." + sanitizeTopicSuffix(evtType)
 
-	// Optional: the request id / account / api_version can exist depending on event and Stripe config
-	apiVersion := extractJSONFieldString(body, "api_version")
-	livemode := extractJSONFieldBool(body, "livemode")
+	msg := pubsub.Message{
+		ID:    evtID,
+		Topic: topic,
+		Type:  evtType,
+		Time:  time.Now().UTC(),
+		Data:  json.RawMessage(raw),
+		Meta: map[string]string{
+			"source":      "stripe",
+			"trace_id":    ctx.TraceID,
+			"delivery_id": evtID,
+			"event_type":  evtType,
+			"client_ip":   ctx.ClientIP,
+		},
+	}
+
+	_ = h.Pub.Publish(topic, msg)
 
 	ctx.JSON(http.StatusOK, map[string]any{
-		"ok":          true,
-		"provider":    "stripe",
-		"event_type":  stripeEventType,
-		"event_id":    stripeEventID,
-		"api_version": apiVersion,
-		"livemode":    livemode,
-		"trace_id":    ctx.TraceID,
-		"body_bytes":  len(body),
+		"ok":         true,
+		"provider":   "stripe",
+		"topic":      topic,
+		"event_type": evtType,
+		"event_id":   evtID,
+		"deduped":    false,
+		"trace_id":   ctx.TraceID,
+		"body_bytes": len(raw),
 	})
 }
 
@@ -141,4 +203,40 @@ func (h *WebhookInHandler) maxBody() int64 {
 		return h.MaxBodyBytes
 	}
 	return 1 << 20 // 1MB
+}
+
+func (h *WebhookInHandler) ensureDeduper() *webhookin.Deduper {
+	if h.Deduper != nil {
+		return h.Deduper
+	}
+	ttl := h.DedupTTL
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	h.Deduper = webhookin.NewDeduper(ttl)
+	return h.Deduper
+}
+
+// sanitizeTopicSuffix keeps topic safe and consistent.
+// Allow [a-zA-Z0-9._-], replace others with '_'.
+func sanitizeTopicSuffix(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "unknown"
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := (c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '.' || c == '_' || c == '-'
+		if ok {
+			b.WriteByte(c)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return strings.ToLower(b.String())
 }
