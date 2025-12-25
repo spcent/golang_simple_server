@@ -10,6 +10,7 @@ import (
 	"github.com/spcent/golang_simple_server/pkg/contract"
 	webhook "github.com/spcent/golang_simple_server/pkg/net/webhookout"
 	"github.com/spcent/golang_simple_server/pkg/router"
+	"github.com/spcent/golang_simple_server/pkg/utils/stringsx"
 )
 
 type WebhookHandler struct {
@@ -180,7 +181,7 @@ func targetToDTO(t webhook.Target) TargetDTO {
 		BackoffBaseMs: t.BackoffBaseMs,
 		BackoffMaxMs:  t.BackoffMaxMs,
 		RetryOn429:    t.RetryOn429,
-		SecretMasked:  maskSecret(t.Secret),
+		SecretMasked:  stringsx.MaskSecret(t.Secret),
 		CreatedAt:     t.CreatedAt,
 		UpdatedAt:     t.UpdatedAt,
 	}

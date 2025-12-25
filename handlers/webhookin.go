@@ -11,6 +11,7 @@ import (
 	"github.com/spcent/golang_simple_server/pkg/net/webhookin"
 	"github.com/spcent/golang_simple_server/pkg/pubsub"
 	"github.com/spcent/golang_simple_server/pkg/router"
+	"github.com/spcent/golang_simple_server/pkg/utils/jsonx"
 )
 
 type WebhookInHandler struct {
@@ -144,8 +145,8 @@ func (h *WebhookInHandler) Stripe(ctx *contract.Ctx) {
 	}
 
 	// Stripe event id and type (best effort)
-	evtID := extractJSONFieldString(raw, "id")
-	evtType := extractJSONFieldString(raw, "type")
+	evtID := jsonx.FieldString(raw, "id")
+	evtType := jsonx.FieldString(raw, "type")
 	if evtType == "" {
 		evtType = "unknown"
 	}
