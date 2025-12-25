@@ -418,12 +418,12 @@ func TestSnapshotLoadUsesDistinctEntries(t *testing.T) {
 	}
 
 	for k, v := range entries {
-		if err := kv.Set(k, v, 0); err != nil {
+		if err = kv.Set(k, v, 0); err != nil {
 			t.Fatalf("Set %s failed: %v", k, err)
 		}
 	}
 
-	if err := kv.Snapshot(); err != nil {
+	if err = kv.Snapshot(); err != nil {
 		t.Fatalf("Snapshot failed: %v", err)
 	}
 
@@ -539,7 +539,7 @@ func TestGetExpiredIncrementsMisses(t *testing.T) {
 	defer kv.Close()
 
 	key := "ephemeral"
-	if err := kv.Set(key, []byte("value"), 20*time.Millisecond); err != nil {
+	if err = kv.Set(key, []byte("value"), 20*time.Millisecond); err != nil {
 		t.Fatalf("Failed to set key with TTL: %v", err)
 	}
 

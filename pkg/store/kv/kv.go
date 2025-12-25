@@ -500,9 +500,9 @@ func (kv *KVStore) Get(key string) ([]byte, error) {
 		// Need write lock to delete expired entry
 		shard.mu.Lock()
 		// Recheck existence and expiration under write lock
-		if entry, exists := shard.data[key]; exists {
-			if !entry.ExpireAt.IsZero() && time.Now().After(entry.ExpireAt) {
-				kv.deleteFromShard(shard, key, entry)
+		if e, exists := shard.data[key]; exists {
+			if !e.ExpireAt.IsZero() && time.Now().After(e.ExpireAt) {
+				kv.deleteFromShard(shard, key, e)
 				if !kv.opts.ReadOnly {
 					kv.logDelete(key)
 				}
@@ -521,15 +521,15 @@ func (kv *KVStore) Get(key string) ([]byte, error) {
 	// Acquire write lock for LRU update
 	shard.mu.Lock()
 	// Recheck existence (could have been deleted by another goroutine)
-	if entry, exists := shard.data[key]; exists {
+	if e, exists := shard.data[key]; exists {
 		// Recheck expiration
-		if !entry.ExpireAt.IsZero() && time.Now().After(entry.ExpireAt) {
+		if !e.ExpireAt.IsZero() && time.Now().After(e.ExpireAt) {
 			shard.mu.Unlock()
 			atomic.AddInt64(&kv.misses, 1)
 			return nil, ErrKeyExpired
 		}
 		// Move to front (LRU)
-		kv.moveToFront(shard, entry)
+		kv.moveToFront(shard, e)
 	}
 	shard.mu.Unlock()
 
