@@ -30,6 +30,8 @@ func (a *App) Boot() error {
 		return err
 	}
 
+	a.configureBuiltIns()
+
 	if a.config.Debug {
 		os.Setenv("APP_DEBUG", "true")
 	}
@@ -43,6 +45,12 @@ func (a *App) Boot() error {
 	}
 
 	return nil
+}
+
+func (a *App) configureBuiltIns() {
+	a.ConfigurePubSubDebug()
+	a.ConfigureWebhookOut()
+	a.ConfigureWebhookIn()
 }
 
 func (a *App) loadEnv() error {

@@ -27,26 +27,16 @@ func main() {
 	gracefulTimeout := flag.Duration("graceful-timeout", 5*time.Second, "Graceful shutdown timeout")
 	flag.Parse()
 
-	// Shared in-proc pubsub for webhook receivers and debug endpoint.
-	pub := pubsub.New()
-
-	webhookCfg := webhookout.ConfigFromEnv()
-	webhookSvc := webhookout.NewService(webhookout.NewMemStore(), webhookCfg)
-	if webhookCfg.Enabled {
-		webhookSvc.Start(context.Background())
-		defer webhookSvc.Stop()
-	}
+	pubSubOpts, stopWebhook := setupMessaging()
+	defer stopWebhook()
 
 	// Create a new app with configuration from flags
 	opts := []core.Option{
 		core.WithAddr(*addr),
 		core.WithEnvPath(*envFile),
 		core.WithShutdownTimeout(*gracefulTimeout),
-		core.WithPubSub(pub),
-		core.WithPubSubDebug(core.PubSubDebugConfig{Enabled: true}),
-		core.WithWebhookOut(core.WebhookOutConfig{Enabled: webhookCfg.Enabled, Service: webhookSvc, IncludeStats: true}),
-		core.WithWebhookIn(core.WebhookInConfig{Enabled: true}),
 	}
+	opts = append(opts, pubSubOpts...)
 
 	if *tlsEnabled {
 		opts = append(opts, core.WithTLS(*tlsCertFile, *tlsKeyFile))
@@ -97,9 +87,6 @@ func main() {
 
 	// Register routes via handlers package
 	handlers.RegisterRoutes(app.Router())
-	app.ConfigurePubSubDebug()
-	app.ConfigureWebhookOut()
-	app.ConfigureWebhookIn()
 
 	// Apply middleware using more elegant methods
 	app.EnableLogging()
@@ -112,4 +99,27 @@ func main() {
 	if err := app.Boot(); err != nil {
 		l.Error("Failed to boot application", log.Fields{"error": err})
 	}
+}
+
+func setupMessaging() ([]core.Option, func()) {
+	// Shared in-proc pubsub for webhook receivers and debug endpoint.
+	pub := pubsub.New()
+
+	webhookCfg := webhookout.ConfigFromEnv()
+	webhookSvc := webhookout.NewService(webhookout.NewMemStore(), webhookCfg)
+
+	stopWebhook := func() {}
+	if webhookCfg.Enabled {
+		webhookSvc.Start(context.Background())
+		stopWebhook = webhookSvc.Stop
+	}
+
+	opts := []core.Option{
+		core.WithPubSub(pub),
+		core.WithPubSubDebug(core.PubSubDebugConfig{Enabled: true}),
+		core.WithWebhookOut(core.WebhookOutConfig{Enabled: webhookCfg.Enabled, Service: webhookSvc, IncludeStats: true}),
+		core.WithWebhookIn(core.WebhookInConfig{Enabled: true}),
+	}
+
+	return opts, stopWebhook
 }
