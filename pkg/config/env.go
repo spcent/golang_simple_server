@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // If overwrite=true, existing environment variables will be overwritten.
@@ -41,7 +42,7 @@ func LoadEnv(filepath string, overwrite bool) error {
 
 // GetString gets an environment variable as a string, returns default value if not found
 func GetString(key, defaultValue string) string {
-	value := os.Getenv(key)
+	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
 		return defaultValue
 	}
@@ -50,7 +51,7 @@ func GetString(key, defaultValue string) string {
 
 // GetInt gets an environment variable as an integer, returns default value if not found or invalid
 func GetInt(key string, defaultValue int) int {
-	value := os.Getenv(key)
+	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
 		return defaultValue
 	}
@@ -65,22 +66,24 @@ func GetInt(key string, defaultValue int) int {
 
 // GetBool gets an environment variable as a boolean, returns default value if not found or invalid
 func GetBool(key string, defaultValue bool) bool {
-	value := os.Getenv(key)
+	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
 		return defaultValue
 	}
 
-	boolValue, err := strconv.ParseBool(value)
-	if err != nil {
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "y", "on", "t":
+		return true
+	case "0", "false", "no", "n", "off", "f":
+		return false
+	default:
 		return defaultValue
 	}
-
-	return boolValue
 }
 
 // GetFloat gets an environment variable as a float, returns default value if not found or invalid
 func GetFloat(key string, defaultValue float64) float64 {
-	value := os.Getenv(key)
+	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
 		return defaultValue
 	}
@@ -91,6 +94,12 @@ func GetFloat(key string, defaultValue float64) float64 {
 	}
 
 	return floatValue
+}
+
+// GetDurationMs gets an environment variable representing milliseconds and returns a time.Duration.
+// Returns the default duration if not found or invalid.
+func GetDurationMs(key string, defaultValueMs int) time.Duration {
+	return time.Duration(GetInt(key, defaultValueMs)) * time.Millisecond
 }
 
 // Set sets an environment variable

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestLoadEnv(t *testing.T) {
@@ -94,5 +95,47 @@ func TestLoadEnvFileNotFound(t *testing.T) {
 	err := LoadEnv("nonexistent.env", false)
 	if err == nil {
 		t.Fatal("期望 LoadEnv 返回错误，但没有返回")
+	}
+}
+
+func TestGetHelpers(t *testing.T) {
+	if got := GetString("MISSING", "default"); got != "default" {
+		t.Fatalf("GetString default fallback failed: %q", got)
+	}
+
+	t.Setenv("TEST_STRING", "  spaced ")
+	if got := GetString("TEST_STRING", "default"); got != "spaced" {
+		t.Fatalf("GetString should trim whitespace, got %q", got)
+	}
+
+	t.Setenv("TEST_INT", "notanint")
+	if got := GetInt("TEST_INT", 5); got != 5 {
+		t.Fatalf("GetInt should fallback to default on invalid input, got %d", got)
+	}
+	t.Setenv("TEST_INT", " 42 ")
+	if got := GetInt("TEST_INT", 5); got != 42 {
+		t.Fatalf("GetInt should parse trimmed integer, got %d", got)
+	}
+
+	t.Setenv("TEST_BOOL_TRUE", "yes")
+	if !GetBool("TEST_BOOL_TRUE", false) {
+		t.Fatalf("GetBool should parse affirmative values")
+	}
+	t.Setenv("TEST_BOOL_FALSE", "OFF")
+	if GetBool("TEST_BOOL_FALSE", true) {
+		t.Fatalf("GetBool should parse negative values")
+	}
+	t.Setenv("TEST_BOOL_INVALID", "maybe")
+	if !GetBool("TEST_BOOL_INVALID", true) {
+		t.Fatalf("GetBool should fallback to default on invalid input")
+	}
+
+	t.Setenv("TEST_FLOAT", " 1.5 ")
+	if got := GetFloat("TEST_FLOAT", 0); got != 1.5 {
+		t.Fatalf("GetFloat should parse trimmed float, got %f", got)
+	}
+	t.Setenv("TEST_DURATION_MS", " 10 ")
+	if got := GetDurationMs("TEST_DURATION_MS", 0); got != 10*time.Millisecond {
+		t.Fatalf("GetDurationMs should parse milliseconds, got %s", got)
 	}
 }
