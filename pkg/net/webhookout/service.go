@@ -176,7 +176,7 @@ func (s *Service) ReplayDelivery(ctx context.Context, deliveryID string) (Delive
 	newID := newID()
 
 	// Optional: keep the original payload verbatim, but update meta.delivery_id for the new delivery.
-	// 推荐：更新 delivery_id 以便接收方幂等键正确。
+	// Recommended: update delivery_id to keep the receiver's idempotency key correct.
 	raw := d.PayloadJSON
 	raw2, err := rewriteDeliveryIDInPayload(raw, newID)
 	if err != nil {

@@ -7,9 +7,9 @@ import (
 )
 
 func TestLoadEnv(t *testing.T) {
-	// 创建临时文件模拟 .env
+	// Create a temporary file to simulate .env
 	content := `
-# 注释行
+# Comment line
 DB_HOST=127.0.0.1
 DB_USER=root
 DB_PASS="secret"
@@ -19,29 +19,29 @@ QUOTED_KEY='quoted_value'
 	tmpFile := "test.env"
 	err := os.WriteFile(tmpFile, []byte(content), 0644)
 	if err != nil {
-		t.Fatalf("创建临时文件失败: %v", err)
+		t.Fatalf("Failed to create temp file: %v", err)
 	}
 	defer os.Remove(tmpFile)
 
-	// 清理环境变量，避免影响测试
+	// Clear environment variables to avoid polluting tests
 	os.Clearenv()
 
-	// 设置一个已有变量，确保不会被覆盖
+	// Set an existing variable to ensure it is not overwritten
 	os.Setenv("DB_USER", "existing_user")
 
-	// 调用 LoadEnv
+	// Call LoadEnv
 	err = LoadEnv(tmpFile, false)
 	if err != nil {
-		t.Fatalf("LoadEnv 执行失败: %v", err)
+		t.Fatalf("LoadEnv execution failed: %v", err)
 	}
 
-	// 校验结果
+	// Validate results
 	tests := []struct {
 		key      string
 		expected string
 	}{
 		{"DB_HOST", "127.0.0.1"},
-		{"DB_USER", "existing_user"}, // 不覆盖已有值
+		{"DB_USER", "existing_user"}, // do not overwrite existing values
 		{"DB_PASS", "secret"},
 		{"EMPTY_KEY", ""},
 		{"QUOTED_KEY", "quoted_value"},
@@ -50,7 +50,7 @@ QUOTED_KEY='quoted_value'
 	for _, tt := range tests {
 		got := os.Getenv(tt.key)
 		if got != tt.expected {
-			t.Errorf("环境变量 %s = %q, 期望 %q", tt.key, got, tt.expected)
+			t.Errorf("Environment variable %s = %q, expected %q", tt.key, got, tt.expected)
 		}
 	}
 }
@@ -63,30 +63,30 @@ DB_USER=root
 	tmpFile := "test_overwrite.env"
 	err := os.WriteFile(tmpFile, []byte(content), 0644)
 	if err != nil {
-		t.Fatalf("创建临时文件失败: %v", err)
+		t.Fatalf("Failed to create temp file: %v", err)
 	}
 	defer os.Remove(tmpFile)
 
-	// 情况1: 不覆盖已有值
+	// Scenario 1: do not overwrite existing values
 	os.Clearenv()
 	os.Setenv("DB_USER", "existing_user")
 	err = LoadEnv(tmpFile, false)
 	if err != nil {
-		t.Fatalf("LoadEnv 执行失败: %v", err)
+		t.Fatalf("LoadEnv execution failed: %v", err)
 	}
 	if got := os.Getenv("DB_USER"); got != "existing_user" {
-		t.Errorf("DB_USER 应该保持为 existing_user, 实际是 %q", got)
+		t.Errorf("DB_USER should remain existing_user, got %q", got)
 	}
 
-	// 情况2: 覆盖已有值
+	// Scenario 2: overwrite existing values
 	os.Clearenv()
 	os.Setenv("DB_USER", "existing_user")
 	err = LoadEnv(tmpFile, true)
 	if err != nil {
-		t.Fatalf("LoadEnv 执行失败: %v", err)
+		t.Fatalf("LoadEnv execution failed: %v", err)
 	}
 	if got := os.Getenv("DB_USER"); got != "root" {
-		t.Errorf("DB_USER 应该被覆盖为 root, 实际是 %q", got)
+		t.Errorf("DB_USER should be overwritten to root, got %q", got)
 	}
 }
 
@@ -94,7 +94,7 @@ func TestLoadEnvFileNotFound(t *testing.T) {
 	os.Clearenv()
 	err := LoadEnv("nonexistent.env", false)
 	if err == nil {
-		t.Fatal("期望 LoadEnv 返回错误，但没有返回")
+		t.Fatal("Expected LoadEnv to return an error, but it did not")
 	}
 }
 

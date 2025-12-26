@@ -14,13 +14,13 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// 初始化日志
+	// Initialize logging
 	Init()
 }
 
-// 测试辅助函数
+// Test helper functions
 
-// captureOutput 捕获输出到缓冲区
+// captureOutput captures output into a buffer
 func captureOutput(f func()) string {
 	var buf bytes.Buffer
 	std.mu.Lock()
@@ -38,7 +38,7 @@ func captureOutput(f func()) string {
 	return buf.String()
 }
 
-// createTempDir 创建临时目录
+// createTempDir creates a temporary directory
 func createTempDir(t *testing.T) string {
 	dir, err := os.MkdirTemp("", "glog_test_*")
 	if err != nil {
@@ -47,26 +47,26 @@ func createTempDir(t *testing.T) string {
 	return dir
 }
 
-// cleanupTempDir 清理临时目录
+// cleanupTempDir removes the temporary directory
 func cleanupTempDir(t *testing.T, dir string) {
 	if err := os.RemoveAll(dir); err != nil {
 		t.Errorf("Failed to cleanup temp dir: %v", err)
 	}
 }
 
-// resetGlobalLogger 重置全局logger到默认状态
+// resetGlobalLogger resets the global logger to its default state
 func resetGlobalLogger() {
 	std.mu.Lock()
 	defer std.mu.Unlock()
 
-	// 关闭所有文件
+	// Close all files
 	for _, file := range std.logFiles {
 		if file != nil {
 			file.Close()
 		}
 	}
 
-	// 重置到默认状态
+	// Reset to default state
 	std.level = INFO
 	std.output = os.Stderr
 	std.toStderr = true
@@ -79,7 +79,7 @@ func resetGlobalLogger() {
 	std.program = filepath.Base(os.Args[0])
 }
 
-// TestBasicLogging 测试基本日志功能
+// TestBasicLogging verifies basic logging functions
 func TestBasicLogging(t *testing.T) {
 	resetGlobalLogger()
 
@@ -127,7 +127,7 @@ func TestBasicLogging(t *testing.T) {
 				t.Errorf("Expected output to contain %q, got %q", tt.expected, output)
 			}
 
-			// 验证日志格式
+			// Verify log format
 			if !regexp.MustCompile(`[IWEF]\d{4} \d{2}:\d{2}:\d{2}\.\d{6} +\d+ \w+:\d+\]`).MatchString(output) {
 				t.Errorf("Log format is incorrect: %q", output)
 			}
@@ -135,7 +135,7 @@ func TestBasicLogging(t *testing.T) {
 	}
 }
 
-// TestLogLevels 测试日志级别过滤
+// TestLogLevels ensures log level filtering works
 func TestLogLevels(t *testing.T) {
 	resetGlobalLogger()
 
@@ -170,7 +170,7 @@ func TestLogLevels(t *testing.T) {
 	}
 }
 
-// TestVerboseLogging 测试详细日志
+// TestVerboseLogging checks verbose logging behavior
 func TestVerboseLogging(t *testing.T) {
 	resetGlobalLogger()
 
@@ -196,7 +196,7 @@ func TestVerboseLogging(t *testing.T) {
 				t.Errorf("V(%d) with verbosity %d: expected %v", tt.logLevel, tt.verbosity, tt.shouldLog)
 			}
 
-			// 测试VLog
+			// Test VLog behavior
 			output := captureOutput(func() {
 				VLog(tt.logLevel, "verbose test message")
 			})
@@ -210,11 +210,11 @@ func TestVerboseLogging(t *testing.T) {
 	}
 }
 
-// TestVmodule 测试vmodule功能
+// TestVmodule validates vmodule functionality
 func TestVmodule(t *testing.T) {
 	resetGlobalLogger()
 
-	// 测试vmodule解析
+	// Validate vmodule parsing
 	std.parseVmodule("glog_test=2,other=1,pattern*=3")
 
 	expected := []vmodulePattern{
@@ -233,14 +233,14 @@ func TestVmodule(t *testing.T) {
 		}
 	}
 
-	// 测试文件匹配
+	// Test file matching
 	testFile := "glog_test.go"
 	verbosity := std.getVerbosityForFile(testFile)
 	if verbosity != 2 {
 		t.Errorf("Expected verbosity 2 for %s, got %d", testFile, verbosity)
 	}
 
-	// 测试不匹配的文件使用全局verbosity
+	// Unmatched files should use the global verbosity
 	std.verbosity = 5
 	testFile = "unmatched.go"
 	verbosity = std.getVerbosityForFile(testFile)
@@ -249,12 +249,12 @@ func TestVmodule(t *testing.T) {
 	}
 }
 
-// TestLogBacktrace 测试堆栈跟踪
+// TestLogBacktrace checks stack trace logging selection
 func TestLogBacktrace(t *testing.T) {
 	resetGlobalLogger()
 
-	// 设置backtrace位置（使用当前文件的某一行）
-	std.logBacktraceAt = "glog_test.go:999" // 使用不存在的行号，避免实际触发
+	// Configure backtrace location (use a line in this file)
+	std.logBacktraceAt = "glog_test.go:999" // Use a non-existent line to avoid triggering
 
 	if !std.shouldLogBacktrace("glog_test.go", 999) {
 		t.Error("Should log backtrace for matching file:line")
@@ -269,14 +269,14 @@ func TestLogBacktrace(t *testing.T) {
 	}
 }
 
-// TestFileOutput 测试文件输出
+// TestFileOutput ensures log output is written to files
 func TestFileOutput(t *testing.T) {
 	resetGlobalLogger()
 
 	tempDir := createTempDir(t)
 	defer cleanupTempDir(t, tempDir)
 
-	// 设置日志目录
+	// Configure log directory
 	std.logDir = tempDir
 	std.program = "testapp"
 
@@ -286,14 +286,14 @@ func TestFileOutput(t *testing.T) {
 	}
 	defer std.Close()
 
-	// 测试不同级别的日志
+	// Write logs at different levels
 	Info("info message")
 	Warning("warning message")
 	Error("error message")
 
 	std.Flush()
 
-	// 验证文件是否创建
+	// Verify files are created
 	files, err := os.ReadDir(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to read temp dir: %v", err)
@@ -310,17 +310,17 @@ func TestFileOutput(t *testing.T) {
 		}
 	}
 
-	// 应该有3个日志文件（INFO、WARN、ERROR）
+	// Expect three log files (INFO, WARN, ERROR)
 	if len(logFiles) < 3 {
 		t.Errorf("Expected at least 3 log files, got %d: %v", len(logFiles), logFiles)
 	}
 
-	// 应该有3个软链接
+	// Expect three symlinks
 	if len(symlinks) < 3 {
 		t.Errorf("Expected at least 3 symlinks, got %d: %v", len(symlinks), symlinks)
 	}
 
-	// 验证INFO文件包含所有日志
+	// Verify the INFO file contains all log entries
 	infoFile := ""
 	for _, file := range logFiles {
 		if strings.Contains(file, "INFO") {
@@ -350,7 +350,7 @@ func TestFileOutput(t *testing.T) {
 	}
 }
 
-// TestConcurrentLogging 测试并发日志记录
+// TestConcurrentLogging validates concurrent logging
 func TestConcurrentLogging(t *testing.T) {
 	resetGlobalLogger()
 
@@ -377,13 +377,13 @@ func TestConcurrentLogging(t *testing.T) {
 	output := buf.String()
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 
-	// 验证日志数量
+	// Verify the number of log lines
 	expectedLines := numGoroutines * numLogs
 	if len(lines) != expectedLines {
 		t.Errorf("Expected %d log lines, got %d", expectedLines, len(lines))
 	}
 
-	// 验证每行都是正确格式
+	// Verify each line is in the expected format
 	for i, line := range lines {
 		if !strings.Contains(line, "goroutine") || !strings.Contains(line, "log") {
 			t.Errorf("Line %d has incorrect format: %s", i, line)
@@ -391,7 +391,7 @@ func TestConcurrentLogging(t *testing.T) {
 	}
 }
 
-// TestLoggerInstance 测试自定义Logger实例
+// TestLoggerInstance validates a custom Logger instance
 func TestLoggerInstance(t *testing.T) {
 	logger := New()
 
@@ -399,13 +399,13 @@ func TestLoggerInstance(t *testing.T) {
 	logger.SetOutput(&buf)
 	logger.SetLevel(WARNING)
 
-	// INFO级别应该被过滤
+	// INFO level logs should be filtered out
 	logger.Info("should not appear")
 	if buf.Len() > 0 {
 		t.Error("INFO log should be filtered when level is WARNING")
 	}
 
-	// WARNING级别应该出现
+	// WARNING level logs should be emitted
 	logger.Warning("should appear")
 	if buf.Len() == 0 {
 		t.Error("WARNING log should not be filtered")
@@ -417,7 +417,7 @@ func TestLoggerInstance(t *testing.T) {
 	}
 }
 
-// TestCopyStandardLogTo 测试标准log重定向
+// TestCopyStandardLogTo verifies redirecting the standard library logger
 func TestCopyStandardLogTo(t *testing.T) {
 	resetGlobalLogger()
 
@@ -426,7 +426,7 @@ func TestCopyStandardLogTo(t *testing.T) {
 
 	CopyStandardLogTo(INFO)
 
-	// 使用标准log包记录日志
+	// Log using the standard library logger
 
 	stdlog.Print("standard log message")
 
@@ -436,9 +436,9 @@ func TestCopyStandardLogTo(t *testing.T) {
 	}
 }
 
-// TestFlagIntegration 测试flag集成
+// TestFlagIntegration validates flag integration
 func TestFlagIntegration(t *testing.T) {
-	// 保存原始值
+	// Save original values
 	origLogDir := *logDir
 	origAlsoLogToStderr := *alsoLogToStderr
 	origLogToStderr := *logToStderr
@@ -455,7 +455,7 @@ func TestFlagIntegration(t *testing.T) {
 		*logBacktraceAt = origLogBacktraceAt
 	}()
 
-	// 设置flag值
+	// Set flag values
 	tempDir := createTempDir(t)
 	defer cleanupTempDir(t, tempDir)
 
@@ -466,12 +466,12 @@ func TestFlagIntegration(t *testing.T) {
 	*vmodule = "test=3"
 	*logBacktraceAt = "test.go:123"
 
-	// 重新初始化
+	// Reinitialize
 	resetGlobalLogger()
 	Init()
 	defer std.Close()
 
-	// 验证设置是否生效
+	// Verify settings are applied
 	if std.logDir != tempDir {
 		t.Errorf("Expected logDir %s, got %s", tempDir, std.logDir)
 	}
@@ -493,14 +493,14 @@ func TestFlagIntegration(t *testing.T) {
 	}
 }
 
-// TestMultiWriter 测试多重写入器
+// TestMultiWriter validates writing to multiple outputs
 func TestMultiWriter(t *testing.T) {
 	resetGlobalLogger()
 
 	tempDir := createTempDir(t)
 	defer cleanupTempDir(t, tempDir)
 
-	// 设置同时输出到文件和stderr
+	// Configure output to both files and stderr
 	std.logDir = tempDir
 	std.alsoToStderr = true
 	std.program = "testapp"
@@ -511,7 +511,7 @@ func TestMultiWriter(t *testing.T) {
 	}
 	defer std.Close()
 
-	// 捕获stderr输出
+	// Capture stderr output
 	var stderrBuf bytes.Buffer
 	oldStderr := os.Stderr
 	r, w, _ := os.Pipe()
@@ -527,15 +527,15 @@ func TestMultiWriter(t *testing.T) {
 	w.Close()
 	os.Stderr = oldStderr
 
-	time.Sleep(100 * time.Millisecond) // 等待goroutine完成
+	time.Sleep(100 * time.Millisecond) // Wait for the goroutine to finish
 
-	// 验证stderr有输出
+	// Verify stderr has output
 	stderrOutput := stderrBuf.String()
 	if !strings.Contains(stderrOutput, "test multi writer message") {
 		t.Errorf("Message not found in stderr: %q", stderrOutput)
 	}
 
-	// 验证文件也有输出
+	// Verify the file also has output
 	files, _ := os.ReadDir(tempDir)
 	var infoFile string
 	for _, file := range files {
@@ -559,10 +559,10 @@ func TestMultiWriter(t *testing.T) {
 	}
 }
 
-// BenchmarkLogging 性能基准测试
+// BenchmarkLogging measures basic logging performance
 func BenchmarkLogging(b *testing.B) {
 	resetGlobalLogger()
-	std.SetOutput(io.Discard) // 丢弃输出以专注于测试性能
+	std.SetOutput(io.Discard) // Discard output to focus on performance
 
 	b.ResetTimer()
 
@@ -586,14 +586,14 @@ func BenchmarkLogging(b *testing.B) {
 	})
 
 	b.Run("VLogFiltered", func(b *testing.B) {
-		std.SetVerbose(0) // 这样VLog(1)会被过滤
+		std.SetVerbose(0) // This filters out VLog(1)
 		for i := 0; i < b.N; i++ {
 			VLog(1, "benchmark filtered message")
 		}
 	})
 }
 
-// BenchmarkConcurrentLogging 并发性能测试
+// BenchmarkConcurrentLogging measures concurrent logging performance
 func BenchmarkConcurrentLogging(b *testing.B) {
 	resetGlobalLogger()
 	std.SetOutput(io.Discard)
@@ -607,19 +607,19 @@ func BenchmarkConcurrentLogging(b *testing.B) {
 	})
 }
 
-// TestEdgeCases 测试边界情况
+// TestEdgeCases covers edge scenarios
 func TestEdgeCases(t *testing.T) {
 	resetGlobalLogger()
 
-	// 测试空消息
+	// Test empty message
 	output := captureOutput(func() {
 		Info("")
 	})
-	if !strings.Contains(output, "I") { // 至少应该有级别标识
+	if !strings.Contains(output, "I") { // At minimum the level marker should exist
 		t.Error("Empty message should still produce log header")
 	}
 
-	// 测试非常长的消息
+	// Test a very long message
 	longMessage := strings.Repeat("a", 10000)
 	output = captureOutput(func() {
 		Info(longMessage)
@@ -628,8 +628,8 @@ func TestEdgeCases(t *testing.T) {
 		t.Error("Long message should be logged completely")
 	}
 
-	// 测试特殊字符
-	specialMessage := "测试中文\n\t特殊字符"
+	// Test special characters
+	specialMessage := "Test Chinese characters\n\tSpecial chars"
 	output = captureOutput(func() {
 		Info(specialMessage)
 	})
@@ -638,21 +638,21 @@ func TestEdgeCases(t *testing.T) {
 	}
 }
 
-// TestErrorHandling 测试错误处理
+// TestErrorHandling validates error cases
 func TestErrorHandling(t *testing.T) {
 	resetGlobalLogger()
 
-	// 测试无效目录
+	// Test invalid directory
 	std.logDir = "/invalid/nonexistent/directory"
 	err := std.initLogFiles()
 	if err == nil {
 		t.Error("Should get error for invalid directory")
 	}
 
-	// 测试无效vmodule
+	// Test invalid vmodule
 	std.parseVmodule("invalid=abc,=123,normal=1")
 
-	// 应该只解析出valid的部分
+	// Only the valid portion should be parsed
 	validCount := 0
 	for _, pattern := range std.vmodulePatterns {
 		if pattern.pattern == "normal" && pattern.level == 1 {
