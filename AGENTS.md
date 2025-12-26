@@ -1,128 +1,231 @@
-# AGENTS.md — golang_simple_server
+# AGENTS.md — golang_simple_server (Best Practice)
 
-This document provides operational guidance for coding agents (Codex, Copilot, etc.) working in this repository.
+This document defines **strict operational guidance** for automated coding agents
+(Codex, Copilot, ChatGPT, etc.) working in this repository.
 
-## Project overview
+The goal is to preserve this project as a **small, explicit, production-grade Go server**
+built on the **Go standard library only**, with predictable behavior and long-term maintainability.
 
-- Repository: `spcent/golang_simple_server`
-- Language: Go (module-based, see `go.mod`)
-- Entry point: `main.go`
-- Common folders (verify locally):
-  - `handlers/` — HTTP handlers (request/response boundary)
-  - `pkg/` — reusable packages (routing/middleware/config/etc.)
-  - `docs/` — design notes / usage docs
-  - `scripts/` — helper scripts (dev/build/release)
-  - `.github/workflows/` — CI workflows
-- Env template: `env.example`
+---
 
-**Server Purpose & Capabilities**
+## 1. Project overview
 
-This server provides a minimal, production-grade web application runtime built exclusively on the Go standard library.
-Its primary purpose is to offer a clean, dependency-free foundation for building RESTful APIs, webhook receivers, and real-time services with predictable behavior and long-term maintainability.
-The server includes an efficient HTTP router with middleware support, structured request context handling, and consistent JSON response semantics.
-It supports secure authentication via JWT, reliable webhook verification and deduplication, and an in-process pub-sub system for event-driven workflows.
-Real-time communication is enabled through a lightweight WebSocket implementation with connection management and backpressure controls.
-For small to medium workloads, it provides a built-in local persistence layer suitable for tokens, deduplication, and configuration data.
-The server emphasizes observability, graceful shutdown, and explicit extensibility while avoiding external dependencies or hidden runtime behavior.
+* Repository: `spcent/golang_simple_server`
+* Language: Go (module-based; see `go.mod`)
+* Entry point: `main.go`
 
-## Golden rules (must follow)
+Expected structure (verify locally):
 
-1. Make changes that are minimal, explicit, and testable.
-2. Do not change public behavior without updating tests and docs.
-3. Never introduce new external dependencies unless explicitly requested.
-4. Do not log secrets/credentials/PII. Redact tokens, Authorization headers, cookies, and user identifiers.
-5. Prefer Go standard library patterns and idiomatic Go (context-aware, error-first, small packages).
+* `handlers/` — HTTP handlers (request/response boundary only)
+* `pkg/` — reusable internal packages (router, middleware, auth, storage, etc.)
+* `docs/` — design notes, API contracts, operational docs
+* `scripts/` — dev / build / release helpers
+* `.github/workflows/` — CI workflows
+* `env.example` — environment variable template
 
-## Local setup
+### Server purpose
 
-### Prerequisites
-- Go toolchain installed (version should satisfy `go.mod`).
-- Optional: `make` (if you use `Makefile` targets).
+This server provides a **minimal but production-ready web runtime** built exclusively on the Go standard library.
 
-### Environment
-- Copy env template and fill values:
-  - `cp env.example .env` (or follow project’s actual loader)
+It is designed to support:
 
-## Build / run / test (authoritative commands)
+* REST-style APIs
+* webhook receivers (verification + deduplication)
+* lightweight WebSocket-based real-time services
+* JWT-based authentication
+* in-process pub-sub
+* small local persistence for tokens, deduplication, and config
 
-Agents must discover the actual commands by inspecting `Makefile` and CI.
-Use the following order:
+**Non-goals**:
 
-1. List available Make targets:
-   - `make help` (if present) or just `cat Makefile`
-2. Try standard Go commands:
-   - `go test ./...`
-   - `go test -race ./...` (if CI budget allows)
-   - `go vet ./...`
-   - `gofmt -w .`
+* No full-stack framework
+* No ORM
+* No automatic schema generation
+* No reflection-heavy magic
+* No hidden background goroutines
+* No implicit global state
 
-If the repo includes a canonical target set, prefer it:
-- `make test`
-- `make lint`
-- `make fmt`
-- `make run`
+---
 
-## Code organization conventions
+## 2. Golden rules (non-negotiable)
 
-### Handlers
-- Handlers should be thin:
-  - Parse/validate input
-  - Call domain/service logic
-  - Map errors to HTTP status codes consistently
-- Avoid business logic in handlers; move it under `pkg/` (or a dedicated internal layer if you add one).
+1. **Minimal change radius**
 
-### Packages under `pkg/`
-- Keep packages cohesive; avoid circular imports.
-- Prefer small interfaces at boundaries, concrete structs internally.
-- Context propagation:
-  - All request-scoped operations accept `context.Context`.
-  - Timeouts/cancellation should be respected.
+   * Fix the smallest possible surface.
+   * Do not refactor unrelated code to “clean things up”.
 
-### Error handling & responses
-- Do not panic for expected errors.
-- Use consistent error typing/wrapping (`fmt.Errorf("...: %w", err)`).
-- Centralize HTTP error mapping if possible (middleware or helper).
+2. **Explicit behavior**
 
-## Testing guidelines
+   * Control flow must be readable without tracing macros or codegen.
+   * Avoid clever abstractions.
 
-- Prefer table-driven tests.
-- For HTTP:
-  - Use `net/http/httptest` to test handlers and middleware.
-  - Avoid binding to real ports in unit tests.
-- If the project has integration tests:
-  - Keep them under a separate package or tag (e.g. `-tags=integration`).
+3. **No external dependencies**
 
-### What to update when changing behavior
-- Update/extend tests first (or alongside change).
-- Update `README.md` and/or `docs/` for:
-  - new env vars
-  - new routes/endpoints
-  - new Make targets or scripts
+   * Do not add third-party packages unless explicitly instructed.
+   * `golang.org/x/*` counts as external unless approved.
 
-## Security & safety checklist (before finishing)
+4. **Behavior changes require tests + docs**
 
-- [ ] No secrets in code or logs
-- [ ] Auth middleware is applied to protected routes
-- [ ] Input validation for JSON/body/query/path params exists
-- [ ] Rate limiting / request size limits are considered (if exposed publicly)
-- [ ] Timeouts set on server and outbound calls
-- [ ] No unsafe deserialization or shell exec without justification
+   * Any change affecting:
 
-## Review guidelines for agents
+     * HTTP status codes
+     * response payloads
+     * auth requirements
+     * routing
+       must update tests and documentation.
 
-When submitting changes (PR or patch), include:
-- Summary of change
-- Why it’s needed
-- How to test (exact commands)
-- Risk assessment (what could break, compatibility notes)
+5. **Security-first defaults**
 
-If you modify routing/middleware, explicitly list:
-- affected endpoints
-- auth requirements
-- backward compatibility
+   * Never log secrets, tokens, Authorization headers, cookies, or user identifiers.
+   * Redact or hash where visibility is required.
 
-## Directory-specific overrides
+6. **Idiomatic Go**
 
-Agents may add more specific rules in subdirectories using `AGENTS.override.md`
-(e.g., for `handlers/` or `pkg/`), keeping root guidance stable.
+   * Error-first returns
+   * Context-aware APIs
+   * Small, cohesive packages
+   * No panic for expected runtime conditions
 
+---
+
+## 3. Local setup & command discovery
+
+Agents **must not assume** commands.
+
+Required discovery process:
+
+1. Inspect `Makefile`:
+
+   ```sh
+   cat Makefile
+   ```
+2. Inspect CI workflows:
+
+   ```sh
+   ls .github/workflows
+   ```
+
+Only then may agents run:
+
+```sh
+go test ./...
+go test -race ./...    # if CI budget allows
+go vet ./...
+gofmt -w .
+```
+
+If canonical Make targets exist, prefer them:
+
+* `make test`
+* `make lint`
+* `make fmt`
+* `make run`
+
+---
+
+## 4. Code organization rules
+
+### Handlers (`handlers/`)
+
+Handlers must:
+
+* Parse and validate input
+* Call domain/service logic
+* Map errors to HTTP responses
+
+Handlers must NOT:
+
+* Contain business logic
+* Perform persistence directly
+* Spawn goroutines without explicit lifecycle control
+
+### Internal packages (`pkg/`)
+
+* Packages must be cohesive and small
+* Avoid circular imports
+* Prefer concrete types internally
+* Use interfaces only at boundaries
+
+### Context usage
+
+* All request-scoped operations must accept `context.Context`
+* Respect cancellation and deadlines
+* `context.Value` is allowed **only** for request-scoped metadata
+  (e.g., request ID, auth claims)
+
+---
+
+## 5. Error handling & HTTP responses
+
+* Do not panic for expected errors
+* Wrap errors explicitly:
+
+  ```go
+  return fmt.Errorf("parse token: %w", err)
+  ```
+* Centralize HTTP error → status mapping where possible
+* Ensure JSON error responses are consistent across handlers
+
+---
+
+## 6. Testing guidelines
+
+* Prefer table-driven tests
+* For HTTP:
+
+  * Use `net/http/httptest`
+  * Do not bind real ports in unit tests
+* Integration tests (if any):
+
+  * Must be clearly separated (e.g. build tags)
+
+### When behavior changes
+
+You must update:
+
+* Tests (new or modified)
+* Documentation:
+
+  * new routes
+  * env vars
+  * auth requirements
+  * scripts or Make targets
+
+---
+
+## 7. Security & safety checklist (mandatory before completion)
+
+Before submitting changes, agents must verify:
+
+* [ ] No secrets or PII logged
+* [ ] Auth middleware applied where required
+* [ ] JSON / query / path input validated
+* [ ] Request size limits considered
+* [ ] Timeouts set on servers and outbound calls
+* [ ] No unsafe deserialization
+* [ ] No shell execution without justification
+
+---
+
+## 8. Required change summary (agent output format)
+
+Every change submission **must include**:
+
+* **Summary**: What changed
+* **Reason**: Why it was needed
+* **How to test**: Exact commands
+* **Risk**: What could break / compatibility notes
+
+If routing or middleware changed, explicitly list:
+
+* affected endpoints
+* auth changes
+* backward compatibility impact
+
+---
+
+## 9. Directory-specific rules
+
+Subdirectories may define stricter rules via `AGENTS.override.md`.
+
+Root rules always apply.
