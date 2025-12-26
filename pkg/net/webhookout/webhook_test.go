@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spcent/golang_simple_server/pkg/config"
 )
 
 func TestConfigFromEnv(t *testing.T) {
@@ -635,27 +637,27 @@ func TestIsPrivateIP(t *testing.T) {
 }
 
 func TestEnvHelpers(t *testing.T) {
-	if envString("MISSING", "default") != "default" {
-		t.Fatalf("envString default failed")
+	if config.GetString("MISSING", "default") != "default" {
+		t.Fatalf("GetString default failed")
 	}
 	t.Setenv("TEST_INT", "notanint")
-	if envInt("TEST_INT", 5) != 5 {
-		t.Fatalf("envInt fallback failed")
+	if config.GetInt("TEST_INT", 5) != 5 {
+		t.Fatalf("GetInt fallback failed")
 	}
 	t.Setenv("TEST_BOOL", "yes")
-	if !envBool("TEST_BOOL", false) {
-		t.Fatalf("envBool parsing failed")
+	if !config.GetBool("TEST_BOOL", false) {
+		t.Fatalf("GetBool parsing failed")
 	}
-	if envDurationMs("TEST_DURATION", 10) != 10*time.Millisecond {
-		t.Fatalf("envDuration default failed")
+	if config.GetDurationMs("TEST_DURATION", 10) != 10*time.Millisecond {
+		t.Fatalf("GetDuration default failed")
 	}
 	t.Setenv("TEST_BOOL_FALSE", "off")
-	if envBool("TEST_BOOL_FALSE", true) {
-		t.Fatalf("envBool should parse false")
+	if config.GetBool("TEST_BOOL_FALSE", true) {
+		t.Fatalf("GetBool should parse false")
 	}
 	t.Setenv("TEST_BOOL_INVALID", "maybe")
-	if envBool("TEST_BOOL_INVALID", true) != true {
-		t.Fatalf("envBool should fallback to default")
+	if config.GetBool("TEST_BOOL_INVALID", true) != true {
+		t.Fatalf("GetBool should fallback to default")
 	}
 }
 

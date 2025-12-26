@@ -1,10 +1,9 @@
 package webhookout
 
 import (
-	"os"
-	"strconv"
-	"strings"
 	"time"
+
+	"github.com/spcent/golang_simple_server/pkg/config"
 )
 
 type DropPolicy string
@@ -36,20 +35,20 @@ type Config struct {
 
 func ConfigFromEnv() Config {
 	cfg := Config{
-		Enabled:    envBool("WEBHOOK_ENABLED", true),
-		QueueSize:  envInt("WEBHOOK_QUEUE_SIZE", 2048),
-		Workers:    envInt("WEBHOOK_WORKERS", 8),
-		DrainMax:   envDurationMs("WEBHOOK_DRAIN_MAX_MS", 5000),
-		DropPolicy: DropPolicy(envString("WEBHOOK_DROP_POLICY", string(BlockWithLimit))),
-		BlockWait:  envDurationMs("WEBHOOK_BLOCK_WAIT_MS", 50),
+		Enabled:    config.GetBool("WEBHOOK_ENABLED", true),
+		QueueSize:  config.GetInt("WEBHOOK_QUEUE_SIZE", 2048),
+		Workers:    config.GetInt("WEBHOOK_WORKERS", 8),
+		DrainMax:   config.GetDurationMs("WEBHOOK_DRAIN_MAX_MS", 5000),
+		DropPolicy: DropPolicy(config.GetString("WEBHOOK_DROP_POLICY", string(BlockWithLimit))),
+		BlockWait:  config.GetDurationMs("WEBHOOK_BLOCK_WAIT_MS", 50),
 
-		DefaultTimeout:    envDurationMs("WEBHOOK_DEFAULT_TIMEOUT_MS", 5000),
-		DefaultMaxRetries: envInt("WEBHOOK_DEFAULT_MAX_RETRIES", 6),
-		BackoffBase:       envDurationMs("WEBHOOK_BACKOFF_BASE_MS", 500),
-		BackoffMax:        envDurationMs("WEBHOOK_BACKOFF_MAX_MS", 30000),
-		RetryOn429:        envBool("WEBHOOK_RETRY_ON_429", true),
+		DefaultTimeout:    config.GetDurationMs("WEBHOOK_DEFAULT_TIMEOUT_MS", 5000),
+		DefaultMaxRetries: config.GetInt("WEBHOOK_DEFAULT_MAX_RETRIES", 6),
+		BackoffBase:       config.GetDurationMs("WEBHOOK_BACKOFF_BASE_MS", 500),
+		BackoffMax:        config.GetDurationMs("WEBHOOK_BACKOFF_MAX_MS", 30000),
+		RetryOn429:        config.GetBool("WEBHOOK_RETRY_ON_429", true),
 
-		AllowPrivateNetwork: envBool("WEBHOOK_ALLOW_PRIVATE_NET", false),
+		AllowPrivateNetwork: config.GetBool("WEBHOOK_ALLOW_PRIVATE_NET", false),
 	}
 
 	if cfg.QueueSize < 1 {
@@ -67,43 +66,4 @@ func ConfigFromEnv() Config {
 		cfg.DropPolicy = BlockWithLimit
 	}
 	return cfg
-}
-
-func envString(key, def string) string {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def
-	}
-	return v
-}
-
-func envInt(key string, def int) int {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-	return n
-}
-
-func envBool(key string, def bool) bool {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def
-	}
-	switch strings.ToLower(v) {
-	case "1", "true", "yes", "y", "on":
-		return true
-	case "0", "false", "no", "n", "off":
-		return false
-	default:
-		return def
-	}
-}
-
-func envDurationMs(key string, defMs int) time.Duration {
-	return time.Duration(envInt(key, defMs)) * time.Millisecond
 }
