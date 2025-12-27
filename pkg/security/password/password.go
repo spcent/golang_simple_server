@@ -1,6 +1,7 @@
 package password
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -70,8 +71,11 @@ func ValidatePasswordStrength(password string, config PasswordStrengthConfig) bo
 	return true
 }
 
-// DefaultCost represents the default number of hash rounds applied during password hashing.
-const DefaultCost = 12
+// DefaultCost represents the default iteration count for password hashing.
+// A higher value increases the computational cost for attackers attempting to
+// brute-force hashed passwords. Adjust cautiously to balance security and
+// performance.
+const DefaultCost = 10_000
 
 // HashPassword generates a salted hash of the password with the default cost.
 func HashPassword(password string) (string, error) {
@@ -124,10 +128,62 @@ func CheckPassword(hashedPassword, password string) error {
 		return nil
 	}
 
+	legacy := deriveKeyLegacy(password, salt, cost)
+	if subtle.ConstantTimeCompare(expectedHash, legacy) == 1 {
+		return nil
+	}
+
 	return errors.New("password mismatch")
 }
 
 func deriveKey(password string, salt []byte, cost int) []byte {
+	return pbkdf2SHA256([]byte(password), salt, cost, sha256.Size)
+}
+
+func pbkdf2SHA256(password, salt []byte, iterations, keyLen int) []byte {
+	if iterations < 1 {
+		return nil
+	}
+
+	hLen := sha256.Size
+	numBlocks := (keyLen + hLen - 1) / hLen
+	derived := make([]byte, 0, numBlocks*hLen)
+
+	for block := 1; block <= numBlocks; block++ {
+		t := pbkdf2Block(password, salt, iterations, block)
+		derived = append(derived, t...)
+	}
+
+	return derived[:keyLen]
+}
+
+func pbkdf2Block(password, salt []byte, iterations, blockIndex int) []byte {
+	h := hmac.New(sha256.New, password)
+	h.Write(salt)
+	h.Write([]byte{
+		byte(blockIndex >> 24),
+		byte(blockIndex >> 16),
+		byte(blockIndex >> 8),
+		byte(blockIndex),
+	})
+
+	u := h.Sum(nil)
+	t := make([]byte, len(u))
+	copy(t, u)
+
+	for i := 1; i < iterations; i++ {
+		h = hmac.New(sha256.New, password)
+		h.Write(u)
+		u = h.Sum(nil)
+		for j := range t {
+			t[j] ^= u[j]
+		}
+	}
+
+	return t
+}
+
+func deriveKeyLegacy(password string, salt []byte, cost int) []byte {
 	combined := append([]byte{}, salt...)
 	combined = append(combined, []byte(password)...)
 
