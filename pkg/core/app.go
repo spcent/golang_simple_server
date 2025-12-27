@@ -22,8 +22,8 @@ type App struct {
 	httpServer    *http.Server            // HTTP server instance
 	middlewares   []middleware.Middleware // Stored middleware for all routes
 	handler       http.Handler            // Combined handler with middleware applied
-	connTracker   *connectionTracker
-	guardsApplied bool
+	connTracker   *connectionTracker      // Connection tracker for WebSocket
+	guardsApplied bool                    // Whether guards have been applied
 
 	logger           log.StructuredLogger
 	metricsCollector middleware.MetricsCollector

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spcent/golang_simple_server/pkg/contract"
+	log "github.com/spcent/golang_simple_server/pkg/log"
 	webhookin "github.com/spcent/golang_simple_server/pkg/net/webhookin"
 	"github.com/spcent/golang_simple_server/pkg/pubsub"
 	"github.com/spcent/golang_simple_server/pkg/utils/jsonx"
@@ -95,7 +96,7 @@ func (a *App) webhookInGitHub(ctx *contract.Ctx, pub pubsub.PubSub, cfg WebhookI
 		ID:    delivery,
 		Topic: topic,
 		Type:  event,
-		Time:  time.Now().UTC(),
+		Time:  time.Now(),
 		Data:  json.RawMessage(raw),
 		Meta: map[string]string{
 			"source":      "github",
@@ -106,7 +107,11 @@ func (a *App) webhookInGitHub(ctx *contract.Ctx, pub pubsub.PubSub, cfg WebhookI
 		},
 	}
 
-	_ = pub.Publish(topic, msg)
+	err = pub.Publish(topic, msg)
+	if err != nil {
+		a.Logger().Error("Failed to publish GitHub event",
+			log.Fields{"error": err, "topic": topic, "event_id": delivery})
+	}
 
 	ctx.JSON(http.StatusOK, map[string]any{
 		"ok":          true,
@@ -177,7 +182,7 @@ func (a *App) webhookInStripe(ctx *contract.Ctx, pub pubsub.PubSub, cfg WebhookI
 		ID:    evtID,
 		Topic: topic,
 		Type:  evtType,
-		Time:  time.Now().UTC(),
+		Time:  time.Now(),
 		Data:  json.RawMessage(raw),
 		Meta: map[string]string{
 			"source":      "stripe",
@@ -188,7 +193,11 @@ func (a *App) webhookInStripe(ctx *contract.Ctx, pub pubsub.PubSub, cfg WebhookI
 		},
 	}
 
-	_ = pub.Publish(topic, msg)
+	err = pub.Publish(topic, msg)
+	if err != nil {
+		a.Logger().Error("Failed to publish Stripe event",
+			log.Fields{"error": err, "topic": topic, "event_id": evtID})
+	}
 
 	ctx.JSON(http.StatusOK, map[string]any{
 		"ok":         true,

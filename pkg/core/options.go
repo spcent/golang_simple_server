@@ -69,9 +69,9 @@ func WithPubSub(ps pubsub.PubSub) Option {
 }
 
 // WithPubSubDebug enables the built-in pubsub debug endpoint.
-func WithPubSubDebug(cfg PubSubDebugConfig) Option {
+func WithPubSubDebug(cfg PubSubConfig) Option {
 	return func(a *App) {
-		a.config.PubSubDebug = cfg
+		a.config.PubSub = cfg
 	}
 }
 

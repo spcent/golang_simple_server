@@ -48,7 +48,7 @@ func (a *App) Boot() error {
 }
 
 func (a *App) configureBuiltIns() {
-	a.ConfigurePubSubDebug()
+	a.ConfigurePubSub()
 	a.ConfigureWebhookOut()
 	a.ConfigureWebhookIn()
 }
@@ -159,9 +159,9 @@ func (a *App) startServer() error {
 }
 
 type connectionTracker struct {
-	active   atomic.Int64
-	logger   log.StructuredLogger
-	interval time.Duration
+	active   atomic.Int64         // Number of active connections
+	logger   log.StructuredLogger // Logger for connection tracking
+	interval time.Duration        // Interval at which to log active connections
 }
 
 func newConnectionTracker(logger log.StructuredLogger, interval time.Duration) *connectionTracker {

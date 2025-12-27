@@ -8,9 +8,9 @@ import (
 	"github.com/spcent/golang_simple_server/pkg/pubsub"
 )
 
-// ConfigurePubSubDebug registers a snapshot endpoint when enabled.
-func (a *App) ConfigurePubSubDebug() {
-	cfg := a.config.PubSubDebug
+// ConfigurePubSub registers a snapshot endpoint when enabled.
+func (a *App) ConfigurePubSub() {
+	cfg := a.config.PubSub
 	if !cfg.Enabled {
 		return
 	}
@@ -21,7 +21,7 @@ func (a *App) ConfigurePubSubDebug() {
 	}
 	path := strings.TrimSpace(cfg.Path)
 	if path == "" {
-		path = "/debug/pubsub"
+		path = "/_debug/pubsub"
 	}
 
 	a.Router().GetCtx(path, func(ctx *contract.Ctx) {

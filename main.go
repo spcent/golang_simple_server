@@ -116,7 +116,7 @@ func setupMessaging() ([]core.Option, func()) {
 
 	opts := []core.Option{
 		core.WithPubSub(pub),
-		core.WithPubSubDebug(core.PubSubDebugConfig{Enabled: true}),
+		core.WithPubSubDebug(core.PubSubConfig{Enabled: true}),
 		core.WithWebhookOut(core.WebhookOutConfig{Enabled: webhookCfg.Enabled, Service: webhookSvc, IncludeStats: true}),
 		core.WithWebhookIn(core.WebhookInConfig{Enabled: true}),
 	}

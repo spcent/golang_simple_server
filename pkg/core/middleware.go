@@ -27,7 +27,11 @@ func (a *App) applyGuardrails() {
 	}
 
 	if a.config.MaxConcurrency > 0 {
-		guards = append(guards, middleware.ConcurrencyLimit(a.config.MaxConcurrency, a.config.QueueDepth, a.config.QueueTimeout, a.logger))
+		guards = append(guards, middleware.ConcurrencyLimit(
+			a.config.MaxConcurrency,
+			a.config.QueueDepth,
+			a.config.QueueTimeout,
+			a.logger))
 	}
 
 	if len(guards) > 0 {
